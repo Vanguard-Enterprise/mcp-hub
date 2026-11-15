@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { parseAccessPolicy } from "./access.js";
+import { argoCdModuleFromEnv } from "./modules/argocd/index.js";
 import { netbirdModuleFromEnv } from "./modules/netbird/index.js";
 import { pocketIdModuleFromEnv } from "./modules/pocketid/index.js";
 import type { HubModule } from "./modules/types.js";
@@ -29,11 +30,11 @@ function parseUrl(name: string, value: string): URL {
 // Every module is enabled by its own environment variables; add new ones here.
 let modules: HubModule[];
 try {
-  modules = [netbirdModuleFromEnv(process.env), pocketIdModuleFromEnv(process.env)].filter((m): m is HubModule => m !== undefined);
+  modules = [netbirdModuleFromEnv(process.env), pocketIdModuleFromEnv(process.env), argoCdModuleFromEnv(process.env)].filter((m): m is HubModule => m !== undefined);
 } catch (error) {
   fail(error instanceof Error ? error.message : String(error));
 }
-if (modules.length === 0) fail("No modules are configured (set NETBIRD_API_TOKEN for netbird or POCKETID_API_KEY for pocketid)");
+if (modules.length === 0) fail("No modules are configured (set NETBIRD_API_TOKEN for netbird, POCKETID_API_KEY for pocketid, or ARGOCD_API_TOKEN for argocd)");
 
 const policyFile = requireEnv("ACCESS_POLICY_FILE");
 let policy;

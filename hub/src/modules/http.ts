@@ -56,16 +56,23 @@ export class JsonApiClient {
     this.#authHeaders = authHeaders;
   }
 
-  get(path: string, query?: Query): Promise<unknown> {
+  async get(path: string, query?: Query): Promise<unknown> {
+    const text = await this.#send("GET", path, query);
+    return text ? JSON.parse(text) : null;
+  }
+
+  /** GET that returns the raw response body, for endpoints that do not answer with one JSON document. */
+  getText(path: string, query?: Query): Promise<string> {
     return this.#send("GET", path, query);
   }
 
   /** POST, PUT, or DELETE with an optional JSON body. Returns the parsed response body, or null when empty. */
-  request(method: WriteMethod, path: string, body?: unknown): Promise<unknown> {
-    return this.#send(method, path, undefined, body);
+  async request(method: WriteMethod, path: string, body?: unknown): Promise<unknown> {
+    const text = await this.#send(method, path, undefined, body);
+    return text ? JSON.parse(text) : null;
   }
 
-  async #send(method: string, path: string, query?: Query, body?: unknown): Promise<unknown> {
+  async #send(method: string, path: string, query?: Query, body?: unknown): Promise<string> {
     const headers: Record<string, string> = { ...this.#authHeaders, Accept: "application/json", "User-Agent": USER_AGENT };
     if (body !== undefined) headers["Content-Type"] = "application/json";
     const response = await fetch(buildUrl(this.baseUrl, path, query), {
@@ -82,6 +89,6 @@ export class JsonApiClient {
       const location = response.headers.get("location");
       throw new ApiError(this.service, response.status, method, path, location ? `redirect to ${location}` : text);
     }
-    return text ? JSON.parse(text) : null;
+    return text;
   }
 }

@@ -69,13 +69,13 @@ export class ToolRegistrar {
   ) {}
 
   read<Shape extends z.ZodRawShape>(name: string, description: string, inputSchema: Shape, request: (args: Args<Shape>) => ReadRequest): void {
-    const callback = (args: Args<Shape>): Promise<CallToolResult> => {
-      const { path, query, transform } = request(args);
-      return apiResult(async () => {
+    const callback = (args: Args<Shape>): Promise<CallToolResult> =>
+      // `request` runs inside apiResult so that a ToolInputError it throws becomes a tool error.
+      apiResult(async () => {
+        const { path, query, transform } = request(args);
         const data = await this.client.get(path, query);
         return transform ? transform(data) : data;
       });
-    };
     // ToolCallback<Shape> is a conditional type that TypeScript cannot resolve
     // for a generic Shape, so the (already validated) argument type is asserted.
     this.server.registerTool(name, { description, inputSchema, annotations: READ_ONLY }, callback as unknown as ToolCallback<Shape>);
