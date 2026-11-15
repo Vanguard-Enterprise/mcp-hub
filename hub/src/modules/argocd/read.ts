@@ -28,6 +28,24 @@ function pick(source: unknown, keys: readonly string[]): Obj {
 
 const LAST_APPLIED = "kubectl.kubernetes.io/last-applied-configuration";
 
+/**
+ * Removes a password embedded in a URL (`https://user:pass@host`, `socks5://user:pass@proxy:1080`), with the user
+ * name, because a token is often sent as either. Argo CD returns repository and proxy URLs as stored.
+ */
+export function stripCredentials(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  try {
+    const url = new URL(value);
+    if (!url.password) return value;
+    url.username = "";
+    url.password = "";
+    return url.href;
+  } catch {
+    // Not a WHATWG URL (scp-style git@host:path has no password); still drop any scheme://user:pass@ prefix.
+    return value.replace(/^([a-z][a-z0-9+.-]*:\/\/)[^/@\s]*:[^/@\s]*@/i, "$1");
+  }
+}
+
 /** Drops server bookkeeping that only costs tokens: managedFields and the last-applied annotation. */
 export function trimObject(obj: unknown): unknown {
   if (!isRecord(obj) || !isRecord(obj.metadata)) return obj;
@@ -45,7 +63,11 @@ function trimList(data: unknown): unknown {
 
 function sources(spec: Obj): Obj[] {
   const list = Array.isArray(spec.sources) ? spec.sources : spec.source ? [spec.source] : [];
-  return list.map((s) => pick(s, ["repoURL", "path", "chart", "targetRevision", "ref"]));
+  return list.map((s) => {
+    const source = pick(s, ["repoURL", "path", "chart", "targetRevision", "ref"]);
+    if (source.repoURL !== undefined) source.repoURL = stripCredentials(source.repoURL);
+    return source;
+  });
 }
 
 /** One line of the application list: where it deploys from and to, and its sync, health, and last operation. */
@@ -61,6 +83,7 @@ export function summarizeApplication(app: unknown): Obj {
   const conditions = Array.isArray(status.conditions) ? status.conditions.map((c) => pick(c, ["type", "message"])) : [];
   return {
     name: metadata.name,
+    namespace: metadata.namespace,
     project: spec.project,
     sources: sources(spec),
     destination: pick(spec.destination, ["server", "name", "namespace"]),
@@ -154,13 +177,18 @@ const CLUSTER_FIELDS = ["name", "server", "project", "namespaces", "clusterResou
 
 /** Repository connections without credentials: an allowlist, so passwords, keys, and tokens never pass even if the API sent them. */
 export function summarizeRepositories(data: unknown): Obj[] {
-  return items(data).map((r) => pick(r, REPOSITORY_FIELDS));
+  return items(data).map((r) => {
+    const repo = pick(r, REPOSITORY_FIELDS);
+    for (const key of ["repo", "proxy"]) if (repo[key] !== undefined) repo[key] = stripCredentials(repo[key]);
+    return repo;
+  });
 }
 
 /** Clusters without their connection config (bearer tokens, TLS keys, exec credentials): an allowlist. */
 export function summarizeClusters(data: unknown): Obj[] {
   return items(data).map((c) => {
     const cluster = pick(c, CLUSTER_FIELDS);
+    if (cluster.server !== undefined) cluster.server = stripCredentials(cluster.server);
     // `info.apiVersions` lists every served API version (about 10 KB per cluster); keep the status fields.
     if (cluster.info !== undefined) cluster.info = pick(cluster.info, ["connectionState", "serverVersion", "cacheInfo", "applicationsCount"]);
     return cluster;
@@ -191,6 +219,12 @@ export function parseLogStream(text: string): string[] {
 
 const appName = z.string().min(1).describe("Application name, as argocd_list_applications shows it");
 
+/** Identifies one application. `app_namespace` matters only with Argo CD's applications-in-any-namespace feature. */
+const APP = {
+  name: appName,
+  app_namespace: z.string().optional().describe("Namespace of the Application object, when it is not Argo CD's own namespace (argocd_list_applications shows it)"),
+};
+
 const RESOURCE = {
   namespace: z.string().optional().describe("Resource namespace; omit for cluster-scoped resources"),
   group: z.string().optional().describe("API group; omit or empty for core kinds (Pod, Service, ConfigMap)"),
@@ -218,10 +252,11 @@ export function registerReadTools(server: McpServer, argocd: ArgoCdClient): void
       project: z.string().optional().describe("Only applications in this Argo CD project"),
       selector: z.string().optional().describe("Label selector, e.g. team=platform"),
       repo: z.string().optional().describe("Only applications deployed from this repository URL"),
+      app_namespace: z.string().optional().describe("Only Application objects in this namespace (applications-in-any-namespace)"),
     },
-    ({ problems_only, project, selector, repo }) => ({
+    ({ problems_only, project, selector, repo, app_namespace }) => ({
       path: "/api/v1/applications",
-      query: { projects: project, selector, repo },
+      query: { projects: project, selector, repo, appNamespace: app_namespace },
       transform: (data) => {
         const apps = items(data).map(summarizeApplication);
         return problems_only ? apps.filter(hasProblem) : apps;
@@ -231,16 +266,17 @@ export function registerReadTools(server: McpServer, argocd: ArgoCdClient): void
   get(
     "argocd_get_application",
     "Retrieve one application: spec, sync and health status, per-resource sync status, the last operation with per-resource results, conditions, and deployment history.",
-    { name: appName },
-    ({ name }) => ({ path: `/api/v1/applications/${seg(name)}`, transform: trimObject }),
+    APP,
+    ({ name, app_namespace }) => ({ path: `/api/v1/applications/${seg(name)}`, query: { appNamespace: app_namespace }, transform: trimObject }),
   );
   get(
     "argocd_get_resource_tree",
     "The live resource tree of an application (including children such as ReplicaSets and Pods): kind, name, version, UID, parents, health, info, and images per node. " +
       "unhealthy_only=true keeps nodes whose health is set and not Healthy.",
-    { name: appName, unhealthy_only: z.boolean().optional().describe("Only nodes that report a health status other than Healthy") },
-    ({ name, unhealthy_only }) => ({
+    { ...APP, unhealthy_only: z.boolean().optional().describe("Only nodes that report a health status other than Healthy") },
+    ({ name, app_namespace, unhealthy_only }) => ({
       path: `/api/v1/applications/${seg(name)}/resource-tree`,
+      query: { appNamespace: app_namespace },
       transform: (data) => {
         const tree = rec(data);
         const keep = (n: unknown) => !unhealthy_only || (isRecord(rec(n).health) && rec(rec(n).health).status !== "Healthy");
@@ -255,27 +291,27 @@ export function registerReadTools(server: McpServer, argocd: ArgoCdClient): void
     "What differs between Git and the cluster: for each managed resource that is out of sync, its target state (Git applied to the live object, as the Argo CD UI diff shows it) and its current live state. " +
       "Narrow it with kind, resource_name, or namespace; include_synced=true also returns resources that match. Secret values are masked by Argo CD.",
     {
-      name: appName,
+      ...APP,
       kind: z.string().optional().describe("Only resources of this kind"),
       resource_name: z.string().optional().describe("Only resources with this name"),
       namespace: z.string().optional().describe("Only resources in this namespace"),
       include_synced: z.boolean().optional().describe("Also return resources that are in sync"),
     },
-    ({ name, kind, resource_name, namespace, include_synced }) => ({
+    ({ name, app_namespace, kind, resource_name, namespace, include_synced }) => ({
       path: `/api/v1/applications/${seg(name)}/managed-resources`,
-      query: { kind, name: resource_name, namespace },
+      query: { kind, name: resource_name, namespace, appNamespace: app_namespace },
       transform: (data) => summarizeDiff(data, include_synced === true),
     }),
   );
   get(
     "argocd_get_resource",
     "The live manifest of one resource managed by (or a child of) an application. Secrets are refused: use the diff or the resource tree to see their metadata.",
-    { name: appName, ...RESOURCE },
-    ({ name, namespace, group, version, kind, resource_name }) => {
+    { ...APP, ...RESOURCE },
+    ({ name, app_namespace, namespace, group, version, kind, resource_name }) => {
       if (kind.toLowerCase() === "secret" && !group) throw new ToolInputError("argocd_get_resource does not return Secrets");
       return {
         path: `/api/v1/applications/${seg(name)}/resource`,
-        query: { namespace, group, version, kind, resourceName: resource_name },
+        query: { namespace, group, version, kind, resourceName: resource_name, appNamespace: app_namespace },
         transform: (data) => parseState(rec(data).manifest),
       };
     },
@@ -284,14 +320,14 @@ export function registerReadTools(server: McpServer, argocd: ArgoCdClient): void
     "argocd_list_events",
     "Kubernetes events, newest first, for an application or, with resource_name and resource_namespace (and resource_uid from argocd_get_resource_tree), for one of its resources.",
     {
-      name: appName,
+      ...APP,
       resource_name: z.string().optional().describe("Name of one resource of the application"),
       resource_namespace: z.string().optional().describe("Namespace of that resource"),
       resource_uid: z.string().optional().describe("UID of that resource"),
     },
-    ({ name, resource_name, resource_namespace, resource_uid }) => ({
+    ({ name, app_namespace, resource_name, resource_namespace, resource_uid }) => ({
       path: `/api/v1/applications/${seg(name)}/events`,
-      query: { resourceName: resource_name, resourceNamespace: resource_namespace, resourceUID: resource_uid },
+      query: { resourceName: resource_name, resourceNamespace: resource_namespace, resourceUID: resource_uid, appNamespace: app_namespace },
       transform: summarizeEvents,
     }),
   );
@@ -299,17 +335,18 @@ export function registerReadTools(server: McpServer, argocd: ArgoCdClient): void
     "argocd_get_revision_metadata",
     "Commit metadata for a revision an application deployed (author, date, message, tags), e.g. the sync revision or a history entry's revision.",
     {
-      name: appName,
+      ...APP,
       revision: z.string().min(1).describe("Git commit SHA (or Helm chart version) of the revision"),
       source_index: z.number().int().min(0).optional().describe("For multi-source applications: index of the source (default 0)"),
     },
-    ({ name, revision, source_index }) => ({
+    ({ name, app_namespace, revision, source_index }) => ({
       path: `/api/v1/applications/${seg(name)}/revisions/${seg(revision)}/metadata`,
-      query: { sourceIndex: source_index },
+      query: { sourceIndex: source_index, appNamespace: app_namespace },
     }),
   );
-  get("argocd_get_sync_windows", "The sync windows that apply to an application and whether syncs are currently allowed.", { name: appName }, ({ name }) => ({
+  get("argocd_get_sync_windows", "The sync windows that apply to an application and whether syncs are currently allowed.", APP, ({ name, app_namespace }) => ({
     path: `/api/v1/applications/${seg(name)}/syncwindows`,
+    query: { appNamespace: app_namespace },
   }));
 
   // Logs: the endpoint streams newline-delimited JSON, so this tool reads the raw body instead of one JSON document.
@@ -320,7 +357,7 @@ export function registerReadTools(server: McpServer, argocd: ArgoCdClient): void
         "Recent container logs of an application's pods, oldest line first, as `timestamp pod line`. Give pod_name for one pod, or kind and resource_name " +
         `(for example a Deployment) for all of its pods. Returns at most ${MAX_LOG_LINES} lines per pod; never follows.`,
       inputSchema: {
-        name: appName,
+        ...APP,
         namespace: z.string().optional().describe("Namespace of the pod or resource"),
         pod_name: z.string().optional().describe("One pod"),
         kind: z.string().optional().describe("Kind of a parent resource, e.g. Deployment, StatefulSet, Job"),
@@ -334,7 +371,7 @@ export function registerReadTools(server: McpServer, argocd: ArgoCdClient): void
       },
       annotations: READ_ONLY,
     },
-    ({ name, namespace, pod_name, kind, resource_name, group, container, tail_lines, since_seconds, filter, previous }) =>
+    ({ name, app_namespace, namespace, pod_name, kind, resource_name, group, container, tail_lines, since_seconds, filter, previous }) =>
       apiResult(async () => {
         if (!pod_name && !(kind && resource_name)) throw new ToolInputError("Give pod_name, or kind and resource_name");
         const text = await argocd.getText(`/api/v1/applications/${seg(name)}/logs`, {
@@ -349,6 +386,7 @@ export function registerReadTools(server: McpServer, argocd: ArgoCdClient): void
           filter,
           previous,
           follow: false,
+          appNamespace: app_namespace,
         });
         return { lines: parseLogStream(text) };
       }),

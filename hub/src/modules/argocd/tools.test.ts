@@ -8,7 +8,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { ArgoCdClient } from "./client.js";
 import { argoCdModule, argoCdModuleFromEnv } from "./index.js";
-import { HIDDEN, parseLogStream } from "./read.js";
+import { HIDDEN, parseLogStream, stripCredentials } from "./read.js";
 
 interface Seen {
   method: string;
@@ -97,7 +97,12 @@ const CLUSTERS = {
     },
   ],
 };
-const REPOS = { items: [{ repo: "https://github.com/org/deploy", type: "git", password: "repo-secret", sshPrivateKey: "ssh-secret", githubAppPrivateKey: "app-secret", connectionState: { status: "Successful" } }] };
+const REPOS = {
+  items: [
+    { repo: "https://github.com/org/deploy", type: "git", password: "repo-secret", sshPrivateKey: "ssh-secret", githubAppPrivateKey: "app-secret", connectionState: { status: "Successful" } },
+    { repo: "https://bot:url-secret@git.example.com/org/charts", type: "helm", proxy: "socks5://user:proxy-secret@proxy.example:1080" },
+  ],
+};
 
 // A fake Argo CD API server that records every request and answers the endpoints the tools rewrite.
 const seen: Seen[] = [];
@@ -243,6 +248,23 @@ test("argocd_list_applications summarizes apps and problems_only keeps the ones 
   );
 });
 
+test("stripCredentials removes embedded passwords and leaves other URLs alone", () => {
+  assert.equal(stripCredentials("https://user:pw@git.example.com/repo.git"), "https://git.example.com/repo.git");
+  assert.equal(stripCredentials("http://user:pw@proxy:8080"), "http://proxy:8080/");
+  assert.equal(stripCredentials("https://github.com/org/deploy"), "https://github.com/org/deploy");
+  assert.equal(stripCredentials("ssh://git@github.com/org/deploy.git"), "ssh://git@github.com/org/deploy.git");
+  assert.equal(stripCredentials("git@github.com:org/deploy.git"), "git@github.com:org/deploy.git");
+});
+
+test("app-scoped tools pass app_namespace as appNamespace", async () => {
+  await call("argocd_get_application", { name: "web", app_namespace: "team-a" });
+  assert.equal(last().path, "/api/v1/applications/web?appNamespace=team-a");
+  await call("argocd_get_logs", { name: "web", app_namespace: "team-a", pod_name: "p" });
+  assert.equal(last().path, "/api/v1/applications/web/logs?podName=p&tailLines=100&follow=false&appNamespace=team-a");
+  await call("argocd_list_applications", { app_namespace: "team-a" });
+  assert.equal(last().path, "/api/v1/applications?appNamespace=team-a");
+});
+
 test("argocd_get_application drops managedFields", async () => {
   const app = (await data("argocd_get_application", { name: "web" })) as { metadata: Record<string, unknown> };
   assert.equal(app.metadata.name, "good");
@@ -323,8 +345,11 @@ test("clusters and repositories never include credentials", async () => {
   const repos = text(await call("argocd_list_repositories"));
   assert.doesNotMatch(clusters, /cluster-secret|keyData|config/);
   assert.deepEqual(JSON.parse(clusters)[0].info, { serverVersion: "v1.36", applicationsCount: 2 });
-  assert.doesNotMatch(repos, /repo-secret|ssh-secret|app-secret/);
-  assert.deepEqual(JSON.parse(repos), [{ repo: "https://github.com/org/deploy", type: "git", connectionState: { status: "Successful" } }]);
+  assert.doesNotMatch(repos, /repo-secret|ssh-secret|app-secret|url-secret|proxy-secret|bot|user/);
+  assert.deepEqual(JSON.parse(repos), [
+    { repo: "https://github.com/org/deploy", type: "git", connectionState: { status: "Successful" } },
+    { repo: "https://git.example.com/org/charts", type: "helm", proxy: "socks5://proxy.example:1080" },
+  ]);
 });
 
 test("Argo CD errors come back as tool errors", async () => {
