@@ -23,8 +23,8 @@ const GROUPS: Record<string, string[]> = {
 let userinfoStatus = 200;
 // Set to send a 200 with a body that is not JSON.
 let userinfoBroken = false;
-// Set to advertise a non-loopback plain-HTTP userinfo endpoint in discovery.
-let plainUserinfo = false;
+// Set to advertise an unacceptable userinfo endpoint in discovery.
+let badUserinfo: string | undefined;
 let userinfoSubOverride: string | undefined;
 let userinfoCalls = 0;
 let issuer = "";
@@ -36,7 +36,7 @@ let jwksStatus = 200;
 const idp: Server = createServer((req, res) => {
   if (req.url === "/.well-known/openid-configuration") {
     res.writeHead(200, { "Content-Type": "application/json" });
-    const userinfo = plainUserinfo ? "http://id.example.com/api/oidc/userinfo" : `${issuer}/api/oidc/userinfo`;
+    const userinfo = badUserinfo ?? `${issuer}/api/oidc/userinfo`;
     res.end(JSON.stringify({ issuer, jwks_uri: `${issuer}/.well-known/jwks.json`, userinfo_endpoint: userinfo }));
   } else if (req.url === "/.well-known/jwks.json") {
     res.writeHead(jwksStatus, { "Content-Type": "application/json" });
@@ -294,11 +294,13 @@ test("userinfo problems: rejection is 401, subject mismatch is 401, outage is 50
   }
 });
 
-test("discovery refuses a plain-HTTP userinfo endpoint on a non-loopback host", async () => {
-  plainUserinfo = true;
+test("discovery refuses userinfo endpoints that are not HTTPS, except plain HTTP on loopback", async () => {
   try {
-    await assert.rejects(newVerifier().init(), /non-HTTPS userinfo_endpoint/);
+    for (const url of ["http://id.example.com/api/oidc/userinfo", "ftp://localhost/userinfo", "ws://127.0.0.1/userinfo"]) {
+      badUserinfo = url;
+      await assert.rejects(newVerifier().init(), /non-HTTPS userinfo_endpoint/, url);
+    }
   } finally {
-    plainUserinfo = false;
+    badUserinfo = undefined;
   }
 });

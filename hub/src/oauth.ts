@@ -73,7 +73,7 @@ export class TokenVerifier {
     const userinfoUrl = new URL(discovery.userinfo_endpoint);
     // The hub sends bearer tokens to userinfo, so it must be TLS (OIDC Core 16.17); plain HTTP
     // only for loopback, which keeps local development and tests working.
-    if (userinfoUrl.protocol !== "https:" && !isLoopback(userinfoUrl)) {
+    if (userinfoUrl.protocol !== "https:" && !(userinfoUrl.protocol === "http:" && isLoopback(userinfoUrl))) {
       throw new Error(`OIDC discovery advertises a non-HTTPS userinfo_endpoint ${userinfoUrl.href}`);
     }
     this.#userinfoUrl = userinfoUrl;
