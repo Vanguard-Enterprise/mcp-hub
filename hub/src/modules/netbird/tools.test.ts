@@ -6,9 +6,9 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { NetBirdClient } from "./netbird.js";
-import { registerTools } from "./tools.js";
-import { registerWriteTools } from "./tools-write.js";
+import { NetBirdClient } from "./client.js";
+import { registerTools } from "./read.js";
+import { registerWriteTools } from "./write.js";
 
 interface Seen {
   method: string;

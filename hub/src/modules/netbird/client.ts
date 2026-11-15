@@ -1,7 +1,7 @@
 export type Query = Record<string, string | boolean | undefined>;
 export type WriteMethod = "POST" | "PUT" | "DELETE";
 
-const USER_AGENT = "netbird-mcp-server/0.3.0";
+const USER_AGENT = "mcp-hub/0.4.0";
 const REQUEST_TIMEOUT_MS = 30_000;
 
 export class NetBirdApiError extends Error {
