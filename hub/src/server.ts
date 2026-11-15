@@ -5,6 +5,7 @@ import { type AccessPolicy, resolveAccess } from "./access.js";
 import { bearerToken } from "./auth.js";
 import type { HubModule } from "./modules/types.js";
 import { AuthError, bearerChallenge, protectedResourceMetadata, protectedResourceMetadataUrl, type TokenVerifier } from "./oauth.js";
+import { SERVER_VERSION } from "./version.js";
 
 export interface ServerConfig {
   verifier: TokenVerifier;
@@ -12,7 +13,7 @@ export interface ServerConfig {
   policy: AccessPolicy;
 }
 
-export const SERVER_INFO = { name: "mcp-hub", version: "0.4.0" };
+export const SERVER_INFO = { name: "mcp-hub", version: SERVER_VERSION };
 
 const HUB_INSTRUCTIONS =
   "This MCP hub groups several backends into sections; tool names start with the section name. " +
