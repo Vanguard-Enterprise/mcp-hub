@@ -53,7 +53,12 @@ const FEDERATED_IDENTITY = z.object({
   issuer: z.string().min(1).describe("Issuer of the external tokens the client authenticates with"),
   subject: z.string().optional().describe("Expected subject (default: the client ID)"),
   audience: z.string().optional().describe("Expected audience (default: the Pocket ID URL)"),
-  jwks: z.string().optional().describe("JWKS URL of the issuer (default: discovered)"),
+  jwks: z.string().optional().describe("JWKS URL of the issuer (default: discovered). Mutually exclusive with publicKeys"),
+  // Loose objects: the key material (n, e, x, y, crv, ...) depends on the key type and must reach Pocket ID unchanged.
+  publicKeys: z
+    .array(z.looseObject({ kty: z.string().min(1), kid: z.string().min(1) }))
+    .optional()
+    .describe('Inline public JWKs instead of a JWKS URL: each needs a unique kid, no private key material, and use "sig" if use is set'),
   replayProtection: z.boolean().optional().describe("Reject reused assertions"),
 });
 

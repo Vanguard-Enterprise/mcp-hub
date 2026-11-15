@@ -318,6 +318,18 @@ test("input is validated before anything is sent", async () => {
   assert.equal(seen.length, before, "invalid input must not reach Pocket ID");
 });
 
+test("an OIDC client update sends inline federated public keys back with all their key material", async () => {
+  const key = { kty: "EC", kid: "k1", crv: "P-256", x: "f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU", y: "x_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0", use: "sig" };
+  const credentials = { federatedIdentities: [{ issuer: "https://ci.example.com", publicKeys: [key], replayProtection: true }] };
+  const result = await call("pocketid_update_oidc_client", { client_id: "c1", ...CLIENT, credentials });
+  assert.notEqual(result.isError, true, text(result));
+  assert.deepEqual((JSON.parse(last().body) as { credentials: unknown }).credentials, credentials);
+  const before = seen.length;
+  const bad = await call("pocketid_update_oidc_client", { client_id: "c1", ...CLIENT, credentials: { federatedIdentities: [{ issuer: "i", publicKeys: [{ kty: "EC" }] }] } });
+  assert.equal(bad.isError, true, "a key without kid is refused");
+  assert.equal(seen.length, before);
+});
+
 test("unknown argument keys are stripped before the body is sent", async () => {
   await call("pocketid_create_group", { friendlyName: "Ops", name: "ops", id: "forged", isAdmin: true });
   assert.deepEqual(JSON.parse(last().body), { friendlyName: "Ops", name: "ops" });
