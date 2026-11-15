@@ -1,8 +1,8 @@
 import type { McpServer, ToolCallback } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import type { NetBirdClient, WriteMethod } from "./netbird.js";
-import { id, netbirdResult, seg } from "./tools.js";
+import type { NetBirdClient, WriteMethod } from "./client.js";
+import { id, netbirdResult, seg } from "./read.js";
 
 // Creates add objects without touching existing ones; updates and deletes change or remove
 // live network configuration, so clients should confirm them with the user.

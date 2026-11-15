@@ -1,7 +1,7 @@
 import type { McpServer, ToolCallback } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { NetBirdApiError, type NetBirdClient, type Query } from "./netbird.js";
+import { NetBirdApiError, type NetBirdClient, type Query } from "./client.js";
 
 const READ_ONLY = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true };
 

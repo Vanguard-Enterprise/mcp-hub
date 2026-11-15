@@ -1,26 +1,23 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { type AccessPolicy, resolveAccess } from "./access.js";
 import { bearerToken } from "./auth.js";
-import type { NetBirdClient } from "./netbird.js";
+import type { HubModule } from "./modules/types.js";
 import { AuthError, bearerChallenge, protectedResourceMetadata, protectedResourceMetadataUrl, type TokenVerifier } from "./oauth.js";
-import { registerTools } from "./tools.js";
-import { registerWriteTools } from "./tools-write.js";
 
 export interface ServerConfig {
   verifier: TokenVerifier;
-  netbird: NetBirdClient;
+  modules: HubModule[];
+  policy: AccessPolicy;
 }
 
-export const SERVER_INFO = { name: "netbird", version: "0.3.0" };
+export const SERVER_INFO = { name: "mcp-hub", version: "0.4.0" };
 
-const INSTRUCTIONS =
-  "Access to a NetBird (WireGuard mesh) account via its Management API. Read tools are netbird_list_* and netbird_get_*; " +
-  "netbird_create_*, netbird_update_*, and netbird_delete_* change live network configuration, so confirm with the user first " +
-  "and read the current object before an update, because updates replace the whole object. " +
-  "NetBird has two separate DNS features: nameserver groups are forwarders to upstream resolvers and hold no records, " +
-  "while DNS zones hold authoritative records that NetBird answers itself for the zone's distribution groups. " +
-  "When a name does not resolve, check both.";
+const HUB_INSTRUCTIONS =
+  "This MCP hub groups several backends into sections; tool names start with the section name. " +
+  "Which sections and whether their write tools appear depends on the caller's identity-provider groups. " +
+  "hub_whoami shows the caller's groups and access per section.";
 
 /** Builds the HTTP server. The caller decides where to listen. */
 export function createHttpServer(config: ServerConfig): Server {
@@ -37,7 +34,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, config: ServerC
   const path = new URL(req.url ?? "/", "http://localhost").pathname;
   const auth = config.verifier.config;
   const log: string[] = [];
-  // Access log: method, path, status, and token subject/audience/typ when authenticated. Never headers or tokens.
+  // Access log: method, path, status, and for authenticated calls the subject and resolved access. Never headers or tokens.
   res.on("finish", () => console.log(`${new Date().toISOString()} ${req.method} ${path} ${res.statusCode}${log.length ? " " + log.join(" ") : ""}`));
 
   if (path === "/healthz") return respond(res, 200, { status: "ok" });
@@ -55,9 +52,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, config: ServerC
     res.setHeader("WWW-Authenticate", bearerChallenge(auth));
     return respond(res, 401, { error: "unauthorized", error_description: "bearer token required" });
   }
-  let verified;
+  let subject: string;
+  let groups: string[];
   try {
-    verified = await config.verifier.verify(token);
+    subject = (await config.verifier.verify(token)).subject;
+    groups = await config.verifier.groups(token, subject);
   } catch (error) {
     if (!(error instanceof AuthError)) throw error;
     if (error.status === 401) {
@@ -67,16 +66,38 @@ async function handle(req: IncomingMessage, res: ServerResponse, config: ServerC
     res.setHeader("Retry-After", "5");
     return respond(res, 503, { error: error.code, error_description: error.message });
   }
-  log.push(`sub=${verified.subject}`, `aud=${verified.audience.join(",")}`, `typ=${verified.typ}`);
+  const access = resolveAccess(config.policy, groups);
+  log.push(`sub=${subject}`, `access=${[...access].map(([s, l]) => `${s}:${l}`).join(",") || "none"}`);
 
-  // Stateless mode: a fresh MCP server and transport per request, no sessions to track.
-  const mcp = new McpServer(SERVER_INFO, { instructions: INSTRUCTIONS });
-  registerTools(mcp, config.netbird);
-  registerWriteTools(mcp, config.netbird, verified.subject);
+  // Stateless mode: a fresh MCP server per request, holding only the tools this caller may use.
+  // A tool outside the caller's sections is never registered, so calling it by name fails too.
+  const allowed = config.modules.filter((m) => access.has(m.name));
+  const instructions = [HUB_INSTRUCTIONS, ...allowed.map((m) => m.instructions)].join("\n\n");
+  const mcp = new McpServer(SERVER_INFO, { instructions });
+  registerWhoami(mcp, subject, groups, access, config.modules);
+  for (const module of allowed) module.register(mcp, access.get(module.name) as "read" | "write", { subject });
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
   res.on("close", () => void mcp.close());
   await mcp.connect(transport);
   await transport.handleRequest(req, res);
+}
+
+function registerWhoami(mcp: McpServer, subject: string, groups: string[], access: Map<string, string>, modules: HubModule[]): void {
+  mcp.registerTool(
+    "hub_whoami",
+    {
+      description: "Show the caller's identity-provider groups and their access (none, read, or write) to each hub section.",
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    () => ({
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({ subject, groups, sections: Object.fromEntries(modules.map((m) => [m.name, access.get(m.name) ?? "none"])) }),
+        },
+      ],
+    }),
+  );
 }
 
 function respond(res: ServerResponse, status: number, body: unknown): void {

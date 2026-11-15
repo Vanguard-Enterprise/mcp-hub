@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { buildUrl, NetBirdClient } from "./netbird.js";
+import { buildUrl, NetBirdClient } from "./client.js";
 
 test("buildUrl joins base and path and strips trailing slashes", () => {
   assert.equal(buildUrl("https://api.netbird.io", "/api/peers").href, "https://api.netbird.io/api/peers");

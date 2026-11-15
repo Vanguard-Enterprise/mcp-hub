@@ -1,14 +1,14 @@
 {
-  "name": "netbird-mcp-server",
-  "version": "0.3.0",
+  "name": "mcp-hub",
+  "version": "0.4.0",
   "private": true,
-  "description": "MCP server for the NetBird Management API (Streamable HTTP, Pocket ID OAuth)",
+  "description": "Self-hosted MCP hub: one endpoint and one Pocket ID login, sections gated by identity-provider groups",
   "type": "module",
   "engines": {
     "node": ">=22.9"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "rm -rf dist && tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "pnpm build && node --test \"dist/**/*.test.js\"",
     "check": "pnpm typecheck && pnpm test",

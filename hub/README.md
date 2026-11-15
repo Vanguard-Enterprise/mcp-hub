@@ -1,20 +1,51 @@
-# NetBird MCP server
+# MCP hub
 
-A small [MCP](https://modelcontextprotocol.io) server that exposes the
-[NetBird Management API](https://docs.netbird.io/api) as tools: read tools for
-every object type, and create, update, and delete tools for the ones an operator
-changes day to day.
-Streamable HTTP transport, stateless, TypeScript on the official MCP TypeScript
-SDK. Authentication is OAuth 2.1: the server is a resource server for
-[Pocket ID](https://pocket-id.org) access tokens, and MCP clients such as Claude
-Code run the authorization-code + PKCE login themselves.
+One [MCP](https://modelcontextprotocol.io) endpoint for all self-hosted MCP
+servers, with one [Pocket ID](https://pocket-id.org) login. Each backend is a
+module ("section") whose tools share a name prefix. What a caller sees is
+decided by their Pocket ID groups: per section, members of its `write` groups
+get read and write tools, members of its `read` groups get the read tools, and
+everyone else gets none of it. Streamable HTTP, stateless, TypeScript on the
+official MCP TypeScript SDK.
 
-## Tools
+## Sections and access
+
+The access policy is a JSON file (`ACCESS_POLICY_FILE`):
+
+```json
+{
+  "sections": {
+    "netbird": { "read": ["mcp_netbird_read"], "write": ["mcp_netbird_write"] }
+  }
+}
+```
+
+- Every request builds an MCP server holding only the caller's tools, so
+  `tools/list` shows exactly what they may use and a hidden tool cannot be
+  called by name.
+- Group memberships come from the issuer's userinfo endpoint (Pocket ID puts
+  `groups` there, not in access tokens) and are cached per token for 60
+  seconds, so removing someone from a group takes effect within a minute.
+- `hub_whoami` is always available and shows the caller's groups and access
+  per section.
+- The policy may only name loaded modules; a typo fails at startup.
+
+### Adding a section
+
+1. Add `src/modules/<name>/` exporting a `HubModule` (name, instructions, and
+   `register(server, level, ctx)`), with tool names prefixed `<name>_`.
+2. Enable it from its own environment variables in `src/index.ts`.
+3. Add `<name>` with its read and write groups to the access policy, and create
+   those groups in Pocket ID.
+
+## NetBird section
+
+### Tools
 
 All tools map to endpoints of the current NetBird OpenAPI spec
 (`netbirdio/netbird`, `shared/management/http/api/openapi.yml`).
 
-### Read tools
+#### Read tools
 
 Read-only (`readOnlyHint: true`), one `GET` each.
 
@@ -38,7 +69,7 @@ Read-only (`readOnlyHint: true`), one `GET` each.
 | `netbird_list_dns_records` | `/api/dns/zones/{zoneId}/records` | `zone_id` |
 | `netbird_get_dns_record` | `/api/dns/zones/{zoneId}/records/{recordId}` | `zone_id`, `record_id` |
 
-### Write tools
+#### Write tools
 
 These change live network configuration. They are annotated as mutating
 (`readOnlyHint: false`; updates and deletes also `destructiveHint: true`), but
@@ -59,8 +90,8 @@ you want them, for example in Claude Code's `settings.json`:
 ```json
 {
   "permissions": {
-    "ask": ["mcp__netbird__netbird_create_*", "mcp__netbird__netbird_update_*"],
-    "deny": ["mcp__netbird__netbird_delete_*"]
+    "ask": ["mcp__hub__netbird_create_*", "mcp__hub__netbird_update_*"],
+    "deny": ["mcp__hub__netbird_delete_*"]
   }
 }
 ```
@@ -106,11 +137,15 @@ body, not as protocol errors.
    `typ` header (`at+jwt`), which rejects ID tokens and any other JWT the issuer
    signs. The audience must be one of `OAUTH_AUDIENCE`, normally only the MCP
    resource URL that clients request with the RFC 8707 `resource` parameter.
+5. The hub asks the issuer's userinfo endpoint for the caller's groups with the
+   same token (it needs the `openid` and `groups` scopes) and resolves them
+   against the access policy.
 
-Pocket ID needs two objects: a public OIDC client with PKCE and the callback URL
+Pocket ID needs: one public OIDC client with PKCE and the callback URL
 `http://localhost/callback` (registered without a port, so any loopback port
-matches), and an API whose resource is the `MCP_PUBLIC_URL`, with that client
-granted user-delegated access. Restrict the client to a user group.
+matches); one API whose resource is the `MCP_PUBLIC_URL`, with that client
+granted user-delegated access; and the groups the access policy names. Restrict
+the client to those groups so nobody else can even log in.
 
 ## Configuration
 
@@ -120,16 +155,17 @@ file in this directory if one exists (see `.env.example`).
 | Variable | Required | Default | Purpose |
 | --- | --- | --- | --- |
 | `OIDC_ISSUER` | yes | | Pocket ID issuer exactly as its discovery document advertises it (no trailing slash), e.g. `https://id.example.com`. Discovery and `iss` check. |
-| `MCP_PUBLIC_URL` | yes | | Public URL of the MCP endpoint, e.g. `https://mcp-netbird.example.com/mcp`. The RFC 8707 resource. |
+| `MCP_PUBLIC_URL` | yes | | Public URL of the MCP endpoint, e.g. `https://mcp.example.com/mcp`. The RFC 8707 resource. |
 | `OAUTH_AUDIENCE` | yes | | Comma-separated accepted `aud` values. Normally only the resource URL; add the OAuth client ID only for clients that send no `resource` parameter. |
-| `OAUTH_SCOPES` | no | `openid profile email offline_access` | Scopes advertised in the resource metadata. |
-| `NETBIRD_API_TOKEN` | yes | | NetBird Personal Access Token. Sent to NetBird as `Authorization: Token <PAT>`. |
+| `OAUTH_SCOPES` | no | `openid profile email groups offline_access` | Scopes advertised in the resource metadata. Keep `openid` and `groups`. |
+| `ACCESS_POLICY_FILE` | yes | | Path to the access policy JSON (see `access-policy.example.json`). |
+| `NETBIRD_API_TOKEN` | for netbird | | NetBird Personal Access Token; setting it enables the netbird section. Sent to NetBird as `Authorization: Token <PAT>`. |
 | `NETBIRD_API_URL` | no | `https://api.netbird.io` | Base URL of a self-hosted NetBird management server. |
 | `HOST` | no | `0.0.0.0` | Listen address. |
 | `PORT` | no | `8080` | Listen port. |
 
 Tokens are never logged. The access log contains method, path, status, and for
-authenticated calls the token subject, audience, and `typ` header.
+authenticated calls the token subject and the resolved access per section.
 
 ## Endpoints
 
@@ -144,24 +180,24 @@ authenticated calls the token subject, audience, and `typ` header.
 Requires Node 22.9 or newer and pnpm.
 
 ```sh
-cd servers/netbird
+cd hub
 pnpm install
 pnpm build
-cp .env.example .env     # fill in the values
-pnpm start               # http://0.0.0.0:8080/mcp
+cp .env.example .env                               # fill in the values
+cp access-policy.example.json access-policy.json   # adjust the groups
+pnpm start                                         # http://0.0.0.0:8080/mcp
 ```
 
-Container image: `docker build -t mcp-netbird servers/netbird` (multi-stage,
-distroless Node 24, runs as uid 65532). CI publishes
-`ghcr.io/vanguard-enterprise/mcp-netbird:main` and `:sha-<commit>` on every push
-to `main`.
+Container image: `docker build -t mcp-hub hub` (multi-stage, distroless Node
+24, runs as uid 65532). CI publishes `ghcr.io/vanguard-enterprise/mcp-hub:main`
+and `:sha-<commit>` on every push to `main`.
 
 ## Add to Claude Code
 
 ```sh
-claude mcp add --transport http --scope user netbird https://mcp-netbird.vngenterprise.com/mcp \
+claude mcp add --transport http --scope user hub https://mcp.vngenterprise.com/mcp \
   --client-id <pocket-id-client-id>
-claude mcp login netbird --no-browser
+claude mcp login hub --no-browser
 ```
 
 `claude mcp login` prints the Pocket ID authorization URL. Open it on any device
@@ -179,9 +215,11 @@ step is the supported path when the browser runs on another device.
 pnpm check     # typecheck, build, unit and HTTP tests (node:test)
 ```
 
-The HTTP tests run a fake OIDC provider (discovery + JWKS) and verify the 401
-challenge, the metadata documents, readiness gating, token rejection cases
-(bad signature, issuer, audience, expiry), and the tool list. The write-tool
+The HTTP tests run a fake OIDC provider (discovery, JWKS, userinfo with
+per-user groups) and verify the 401 challenge, the metadata documents, readiness
+gating, token rejection cases (bad signature, issuer, audience, expiry), tool
+lists for write, read, and no-access callers, that a hidden tool cannot be
+called, group caching, and userinfo failures. The write-tool
 tests connect an in-process MCP client to the server and check, against a fake
 NetBird API, the method, path, headers, and body of each kind of call, input
 validation, and error mapping.

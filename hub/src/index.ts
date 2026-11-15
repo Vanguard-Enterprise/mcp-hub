@@ -1,29 +1,43 @@
-import { NetBirdClient } from "./netbird.js";
+import { readFileSync } from "node:fs";
+import { parseAccessPolicy } from "./access.js";
+import { netbirdModuleFromEnv } from "./modules/netbird/index.js";
+import type { HubModule } from "./modules/types.js";
 import { TokenVerifier } from "./oauth.js";
 import { createHttpServer } from "./server.js";
 
-const DEFAULT_NETBIRD_API_URL = "https://api.netbird.io";
-const DEFAULT_SCOPES = "openid profile email offline_access";
+// `groups` is required: Pocket ID only reports group memberships to tokens granted it.
+const DEFAULT_SCOPES = "openid profile email groups offline_access";
+
+function fail(message: string): never {
+  console.error(message);
+  process.exit(1);
+}
 
 function requireEnv(name: string): string {
-  const value = process.env[name]?.trim();
-  if (!value) {
-    console.error(`Missing required environment variable ${name}`);
-    process.exit(1);
-  }
-  return value;
+  return process.env[name]?.trim() || fail(`Missing required environment variable ${name}`);
 }
 
 function parseUrl(name: string, value: string): URL {
   try {
     return new URL(value);
   } catch {
-    console.error(`${name} must be an absolute URL, got ${JSON.stringify(value)}`);
-    process.exit(1);
+    fail(`${name} must be an absolute URL, got ${JSON.stringify(value)}`);
   }
 }
 
-const netbird = new NetBirdClient(process.env.NETBIRD_API_URL?.trim() || DEFAULT_NETBIRD_API_URL, requireEnv("NETBIRD_API_TOKEN"));
+// Every module is enabled by its own environment variables; add new ones here.
+const modules = [netbirdModuleFromEnv(process.env)].filter((m): m is HubModule => m !== undefined);
+if (modules.length === 0) fail("No modules are configured (set NETBIRD_API_TOKEN for the netbird module)");
+
+const policyFile = requireEnv("ACCESS_POLICY_FILE");
+let policy;
+try {
+  policy = parseAccessPolicy(readFileSync(policyFile, "utf8"), modules.map((m) => m.name));
+} catch (error) {
+  fail(`${policyFile}: ${error instanceof Error ? error.message : String(error)}`);
+}
+for (const m of modules) if (!(m.name in policy.sections)) console.warn(`module ${m.name} has no entry in the access policy, so nobody can use it`);
+
 // Kept exactly as configured: OIDC requires the issuer to match the discovery
 // document and the token `iss` byte for byte (Pocket ID advertises no trailing slash).
 const issuer = requireEnv("OIDC_ISSUER");
@@ -39,21 +53,18 @@ const audiences = requireEnv("OAUTH_AUDIENCE")
 const scopesSupported = (process.env.OAUTH_SCOPES?.trim() || DEFAULT_SCOPES).split(/\s+/).filter(Boolean);
 const host = process.env.HOST?.trim() || "0.0.0.0";
 const port = Number(process.env.PORT ?? 8080);
-if (!Number.isInteger(port) || port < 1 || port > 65535) {
-  console.error(`PORT must be an integer between 1 and 65535, got ${JSON.stringify(process.env.PORT)}`);
-  process.exit(1);
-}
+if (!Number.isInteger(port) || port < 1 || port > 65535) fail(`PORT must be an integer between 1 and 65535, got ${JSON.stringify(process.env.PORT)}`);
 
 const verifier = new TokenVerifier({ issuer, audiences, resourceUrl, scopesSupported });
-const server = createHttpServer({ verifier, netbird });
+const server = createHttpServer({ verifier, modules, policy });
 
 server.listen(port, host, () => {
   console.log(
-    `netbird-mcp-server listening on http://${host}:${port}/mcp (resource ${resourceUrl.href}, issuer ${issuer}, NetBird API ${netbird.baseUrl})`,
+    `mcp-hub listening on http://${host}:${port}/mcp (resource ${resourceUrl.href}, issuer ${issuer}, modules ${modules.map((m) => m.name).join(", ")})`,
   );
 });
 
-// Discovery runs after listen so liveness passes while Pocket ID is unreachable; readiness waits for it.
+// Discovery runs after listen so liveness passes while the issuer is unreachable; readiness waits for it.
 let shuttingDown = false;
 void (async () => {
   for (let delayMs = 1_000; !shuttingDown; delayMs = Math.min(delayMs * 2, 30_000)) {
