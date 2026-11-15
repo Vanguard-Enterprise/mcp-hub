@@ -4,4 +4,4 @@ Self-hosted [MCP](https://modelcontextprotocol.io) servers, one self-contained p
 
 | Server | Path | What it does |
 | --- | --- | --- |
-| NetBird | [`servers/netbird`](servers/netbird) | Read-only access to the NetBird Management API (peers, groups, users, setup keys, policies, routes, DNS). |
+| NetBird | [`servers/netbird`](servers/netbird) | NetBird Management API: read tools for peers, groups, users, setup keys, policies, routes, and DNS; create/update/delete tools for groups, policies, routes, setup keys, DNS, and peers. Pocket ID OAuth. |

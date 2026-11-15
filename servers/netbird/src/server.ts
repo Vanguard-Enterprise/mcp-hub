@@ -5,16 +5,19 @@ import { bearerToken } from "./auth.js";
 import type { NetBirdClient } from "./netbird.js";
 import { AuthError, bearerChallenge, protectedResourceMetadata, protectedResourceMetadataUrl, type TokenVerifier } from "./oauth.js";
 import { registerTools } from "./tools.js";
+import { registerWriteTools } from "./tools-write.js";
 
 export interface ServerConfig {
   verifier: TokenVerifier;
   netbird: NetBirdClient;
 }
 
-export const SERVER_INFO = { name: "netbird", version: "0.2.0" };
+export const SERVER_INFO = { name: "netbird", version: "0.3.0" };
 
 const INSTRUCTIONS =
-  "Read-only view of a NetBird (WireGuard mesh) account via its Management API. " +
+  "Access to a NetBird (WireGuard mesh) account via its Management API. Read tools are netbird_list_* and netbird_get_*; " +
+  "netbird_create_*, netbird_update_*, and netbird_delete_* change live network configuration, so confirm with the user first " +
+  "and read the current object before an update, because updates replace the whole object. " +
   "NetBird has two separate DNS features: nameserver groups are forwarders to upstream resolvers and hold no records, " +
   "while DNS zones hold authoritative records that NetBird answers itself for the zone's distribution groups. " +
   "When a name does not resolve, check both.";
@@ -69,6 +72,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, config: ServerC
   // Stateless mode: a fresh MCP server and transport per request, no sessions to track.
   const mcp = new McpServer(SERVER_INFO, { instructions: INSTRUCTIONS });
   registerTools(mcp, config.netbird);
+  registerWriteTools(mcp, config.netbird);
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
   res.on("close", () => void mcp.close());
   await mcp.connect(transport);
