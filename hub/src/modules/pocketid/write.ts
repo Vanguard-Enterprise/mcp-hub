@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { JsonApiClient } from "../http.js";
 import { ACTION, CREATE, DELETE, id, seg, ToolInputError, ToolRegistrar, UPDATE } from "../tools.js";
 import type { PocketIdClient } from "./client.js";
-import { redactAppConfig } from "./read.js";
+import { HIDDEN, redactAppConfig, SECRET_CONFIG_KEYS } from "./read.js";
 
 const REPLACES =
   "Replaces the whole object: fetch it first with the matching pocketid_get_* tool and send every field back with your changes; " +
@@ -107,7 +107,24 @@ export async function mergedAppConfig(client: JsonApiClient, changes: Record<str
   }
   const unknown = Object.keys(changes).filter((key) => !(key in config));
   if (unknown.length > 0) throw new ToolInputError(`Unknown configuration keys: ${unknown.join(", ")}. See pocketid_get_app_config for the valid keys.`);
-  return { ...config, ...changes };
+  // A credential sent back as the read tools' placeholder means "unchanged", never the literal value.
+  const applied = Object.fromEntries(Object.entries(changes).filter(([key, value]) => !(SECRET_CONFIG_KEYS.has(key) && value === HIDDEN)));
+  return { ...config, ...applied };
+}
+
+/**
+ * The SCIM bearer token to save. Pocket ID stores whatever it gets (an empty token clears it), and the read tool
+ * shows the token as a placeholder, so an omitted or placeholder token is replaced by the provider's current one.
+ */
+export async function scimTokenToSave(client: JsonApiClient, providerId: string, oidcClientId: string, token: string | undefined): Promise<string> {
+  if (token !== undefined && token !== HIDDEN) return token;
+  const current = (await client.get(`/api/oidc/clients/${seg(oidcClientId)}/scim-service-provider`)) as { id?: unknown; token?: unknown } | null;
+  if (current?.id !== providerId || typeof current.token !== "string") {
+    throw new ToolInputError(
+      `SCIM provider ${providerId} is not the one configured for OIDC client ${oidcClientId}, so its current token cannot be kept. Pass the token explicitly.`,
+    );
+  }
+  return current.token;
 }
 
 /**
@@ -323,10 +340,16 @@ export function registerWriteTools(server: McpServer, pocketid: PocketIdClient, 
   }));
   write(
     "pocketid_update_scim_provider",
-    `Update a SCIM service provider's endpoint, token, or client. ${REPLACES}`,
+    "Update a SCIM service provider's endpoint, token, or client; send the endpoint and client even when unchanged. " +
+      "Omit token (or send the [hidden] placeholder) to keep the current one; that needs oidcClientId to be the provider's current client, " +
+      "so pass a token explicitly when moving the provider to another client.",
     UPDATE,
     { provider_id: id("SCIM service provider"), ...SCIM_PROVIDER },
-    ({ provider_id, ...b }) => ({ method: "PUT", path: `/api/scim/service-provider/${seg(provider_id)}`, body: b }),
+    async ({ provider_id, token, ...b }, client) => ({
+      method: "PUT",
+      path: `/api/scim/service-provider/${seg(provider_id)}`,
+      body: { ...b, token: await scimTokenToSave(client, provider_id, b.oidcClientId, token) },
+    }),
   );
   write("pocketid_delete_scim_provider", "Delete a SCIM service provider; Pocket ID stops provisioning to it.", DELETE, { provider_id: id("SCIM service provider") }, ({ provider_id }) => ({
     method: "DELETE",
@@ -340,7 +363,7 @@ export function registerWriteTools(server: McpServer, pocketid: PocketIdClient, 
   // Application configuration
   write(
     "pocketid_update_app_config",
-    "Change application configuration values. Pass only the keys to change (values are strings, e.g. \"true\"); the hub reads the current configuration, applies the changes, and saves the whole configuration. Keys come from pocketid_get_app_config.",
+    "Change application configuration values. Pass only the keys to change (values are strings, e.g. \"true\"); the hub reads the current configuration, applies the changes, and saves the whole configuration. Keys come from pocketid_get_app_config; a password sent as [hidden] is left unchanged.",
     UPDATE,
     { changes: z.record(z.string().min(1), z.string()).refine((c) => Object.keys(c).length > 0, "at least one change").describe("Configuration keys and their new values") },
     // Pocket ID answers with the saved configuration, credentials included.

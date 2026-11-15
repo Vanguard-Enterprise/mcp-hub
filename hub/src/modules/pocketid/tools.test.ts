@@ -289,6 +289,27 @@ test("update_app_config merges the changes into the current configuration, crede
   assert.doesNotMatch(text(result), /smtp-secret/, "the tool result does not echo the configuration's credentials");
 });
 
+test("a SCIM provider update without a new token keeps the current one", async () => {
+  for (const token of [undefined, HIDDEN]) {
+    const result = await call("pocketid_update_scim_provider", { provider_id: "s1", endpoint: "https://scim2.example.com", oidcClientId: "c1", ...(token ? { token } : {}) });
+    assert.notEqual(result.isError, true, text(result));
+    const [get, put] = seen.slice(-2);
+    assert.equal(get?.path, "/api/oidc/clients/c1/scim-service-provider");
+    assert.equal(put?.path, "/api/scim/service-provider/s1");
+    assert.deepEqual(JSON.parse(put?.body ?? ""), { endpoint: "https://scim2.example.com", oidcClientId: "c1", token: "scim-secret" });
+  }
+  const before = seen.length;
+  const moved = await call("pocketid_update_scim_provider", { provider_id: "s2", endpoint: "https://scim.example.com", oidcClientId: "c1" });
+  assert.equal(moved.isError, true);
+  assert.match(text(moved), /Pass the token explicitly/);
+  assert.equal(seen.length, before + 1, "only the lookup reached Pocket ID, nothing was saved");
+});
+
+test("update_app_config treats a hidden password as unchanged", async () => {
+  await call("pocketid_update_app_config", { changes: { smtpPassword: HIDDEN, appName: "ID" } });
+  assert.deepEqual(JSON.parse(last().body), { appName: "ID", allowUserSignups: "disabled", smtpPassword: "smtp-secret", ldapBindPassword: "" });
+});
+
 test("update_app_config rejects unknown keys and empty changes without saving", async () => {
   const before = seen.length;
   const unknown = await call("pocketid_update_app_config", { changes: { appname: "typo" } });

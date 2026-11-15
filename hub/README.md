@@ -183,7 +183,10 @@ everything back with the change. `pocketid_update_app_config` is the
 exception: it takes only the keys to change, reads the current configuration
 (with the real credentials) itself, and saves the merged result, so a change
 to one setting cannot wipe the SMTP or LDAP password. Unknown keys are refused
-before anything is saved.
+before anything is saved. Credentials sent back as the `[hidden]` placeholder
+mean "unchanged": a hidden SMTP or LDAP password is left as it is, and
+`pocketid_update_scim_provider` without a token (or with `[hidden]`) looks up
+and keeps the provider's current token.
 
 | Tool | Endpoint |
 | --- | --- |
