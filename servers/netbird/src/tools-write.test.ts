@@ -30,7 +30,9 @@ const fake: Server = createServer((req, res) => {
       res.writeHead(400, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ message: "bad request", code: 400 }));
     } else if (req.method === "DELETE") {
-      res.writeHead(200).end();
+      // NetBird's delete handlers answer 200 with an empty JSON object.
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end("{}");
     } else {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ id: "new-id", echo: body ? JSON.parse(body) : null }));
@@ -68,9 +70,85 @@ test("read tools are read-only, write tools are not, and deletes are destructive
   for (const tool of tools) {
     const isWrite = /^netbird_(create|update|delete)_/.test(tool.name);
     assert.equal(tool.annotations?.readOnlyHint, !isWrite, tool.name);
-    if (/^netbird_(delete|update)_/.test(tool.name)) assert.equal(tool.annotations?.destructiveHint, true, tool.name);
-    if (/^netbird_create_/.test(tool.name)) assert.equal(tool.annotations?.destructiveHint, false, tool.name);
+    if (/^netbird_(delete|update)_/.test(tool.name)) {
+      assert.equal(tool.annotations?.destructiveHint, true, tool.name);
+      assert.equal(tool.annotations?.idempotentHint, true, tool.name);
+    }
+    if (/^netbird_create_/.test(tool.name)) {
+      assert.equal(tool.annotations?.destructiveHint, false, tool.name);
+      assert.equal(tool.annotations?.idempotentHint, false, tool.name);
+    }
   }
+});
+
+const RULE = { name: "r", enabled: true, action: "accept", bidirectional: true, protocol: "tcp", ports: ["443"], sources: ["g1"], destinations: ["g2"] };
+const ROUTE = { description: "d", network_id: "n", enabled: true, network: "10.0.0.0/24", peer: "p1", metric: 100, masquerade: true, groups: ["g1"], keep_route: false };
+const NS_GROUP = { name: "ns", description: "d", nameservers: [{ ip: "1.1.1.1", ns_type: "udp", port: 53 }], enabled: true, groups: ["g1"], primary: true, domains: [], search_domains_enabled: false };
+const ZONE = { name: "z", domain: "int.example.com", enable_search_domain: true, distribution_groups: ["g1"] };
+const RECORD = { name: "a.int.example.com", type: "A", content: "10.0.0.1", ttl: 300 };
+const PEER = { name: "n", ssh_enabled: false, login_expiration_enabled: true, inactivity_expiration_enabled: false };
+
+// Every write tool: minimal valid arguments and the request they must produce. The body is
+// the arguments minus the path parameters (network_id is a real body field, so match exactly).
+const PATH_PARAMS = new Set(["group_id", "policy_id", "route_id", "key_id", "nsgroup_id", "zone_id", "record_id", "peer_id"]);
+const CASES: { tool: string; args: Record<string, unknown>; method: string; path: string }[] = [
+  { tool: "netbird_create_group", args: { name: "g" }, method: "POST", path: "/api/groups" },
+  { tool: "netbird_update_group", args: { group_id: "g1", name: "g", peers: ["p1"] }, method: "PUT", path: "/api/groups/g1" },
+  { tool: "netbird_delete_group", args: { group_id: "g1" }, method: "DELETE", path: "/api/groups/g1" },
+  { tool: "netbird_create_policy", args: { name: "p", enabled: true, rules: [RULE] }, method: "POST", path: "/api/policies" },
+  { tool: "netbird_update_policy", args: { policy_id: "p1", name: "p", enabled: true, rules: [{ ...RULE, id: "r1" }] }, method: "PUT", path: "/api/policies/p1" },
+  { tool: "netbird_delete_policy", args: { policy_id: "p1" }, method: "DELETE", path: "/api/policies/p1" },
+  { tool: "netbird_create_route", args: ROUTE, method: "POST", path: "/api/routes" },
+  { tool: "netbird_update_route", args: { route_id: "r1", ...ROUTE }, method: "PUT", path: "/api/routes/r1" },
+  { tool: "netbird_delete_route", args: { route_id: "r1" }, method: "DELETE", path: "/api/routes/r1" },
+  { tool: "netbird_create_setup_key", args: { name: "k", type: "reusable", expires_in: 86400, auto_groups: ["g1"], usage_limit: 0 }, method: "POST", path: "/api/setup-keys" },
+  { tool: "netbird_update_setup_key", args: { key_id: "k1", revoked: true, auto_groups: ["g1"] }, method: "PUT", path: "/api/setup-keys/k1" },
+  { tool: "netbird_delete_setup_key", args: { key_id: "k1" }, method: "DELETE", path: "/api/setup-keys/k1" },
+  { tool: "netbird_create_nameserver_group", args: NS_GROUP, method: "POST", path: "/api/dns/nameservers" },
+  { tool: "netbird_update_nameserver_group", args: { nsgroup_id: "n1", ...NS_GROUP }, method: "PUT", path: "/api/dns/nameservers/n1" },
+  { tool: "netbird_delete_nameserver_group", args: { nsgroup_id: "n1" }, method: "DELETE", path: "/api/dns/nameservers/n1" },
+  { tool: "netbird_create_dns_zone", args: ZONE, method: "POST", path: "/api/dns/zones" },
+  { tool: "netbird_update_dns_zone", args: { zone_id: "z1", ...ZONE, enabled: false }, method: "PUT", path: "/api/dns/zones/z1" },
+  { tool: "netbird_delete_dns_zone", args: { zone_id: "z1" }, method: "DELETE", path: "/api/dns/zones/z1" },
+  { tool: "netbird_create_dns_record", args: { zone_id: "z1", ...RECORD }, method: "POST", path: "/api/dns/zones/z1/records" },
+  { tool: "netbird_update_dns_record", args: { zone_id: "z1", record_id: "r1", ...RECORD }, method: "PUT", path: "/api/dns/zones/z1/records/r1" },
+  { tool: "netbird_delete_dns_record", args: { zone_id: "z1", record_id: "r1" }, method: "DELETE", path: "/api/dns/zones/z1/records/r1" },
+  { tool: "netbird_update_peer", args: { peer_id: "p1", ...PEER }, method: "PUT", path: "/api/peers/p1" },
+  { tool: "netbird_delete_peer", args: { peer_id: "p1" }, method: "DELETE", path: "/api/peers/p1" },
+];
+
+test("every write tool sends the spec's method and path, with the ID parameters kept out of the body", async () => {
+  const { tools } = await client.listTools();
+  const writeTools = tools.map((t) => t.name).filter((n) => /^netbird_(create|update|delete)_/.test(n)).sort();
+  assert.deepEqual(writeTools, CASES.map((c) => c.tool).sort(), "every write tool has a case");
+  for (const c of CASES) {
+    const result = (await client.callTool({ name: c.tool, arguments: c.args })) as CallToolResult;
+    assert.notEqual(result.isError, true, `${c.tool}: ${JSON.stringify(result.content)}`);
+    const req = last();
+    assert.equal(req.method, c.method, c.tool);
+    assert.equal(req.path, c.path, c.tool);
+    const expectedBody = Object.fromEntries(Object.entries(c.args).filter(([k]) => !PATH_PARAMS.has(k)));
+    if (c.method === "DELETE") assert.equal(req.body, "", c.tool);
+    else assert.deepEqual(JSON.parse(req.body), expectedBody, c.tool);
+  }
+});
+
+test("unknown argument keys are stripped before the body is sent", async () => {
+  await client.callTool({ name: "netbird_create_group", arguments: { name: "g", id: "forged", foo: 1 } });
+  assert.deepEqual(JSON.parse(last().body), { name: "g" });
+});
+
+test("spec bounds are enforced before anything is sent", async () => {
+  const before = seen.length;
+  for (const [name, args] of [
+    ["netbird_create_route", { ...ROUTE, metric: 0 }],
+    ["netbird_create_nameserver_group", { ...NS_GROUP, nameservers: Array(4).fill(NS_GROUP.nameservers[0]) }],
+    ["netbird_create_group", { name: "g", resources: [{ id: "x", type: "bucket" }] }],
+  ] as const) {
+    const result = (await client.callTool({ name, arguments: args as Record<string, unknown> })) as CallToolResult;
+    assert.equal(result.isError, true, name);
+  }
+  assert.equal(seen.length, before);
 });
 
 test("create sends POST with a JSON body and the PAT", async () => {
@@ -104,6 +182,7 @@ test("delete sends DELETE without a body and reports the outcome", async () => {
   assert.equal(req.body, "");
   assert.equal(req.contentType, undefined);
   assert.notEqual(result.isError, true);
+  // The API's "{}" is turned into a status object.
   assert.deepEqual(JSON.parse((result.content[0] as { text: string }).text), { status: "ok", method: "DELETE", path: "/api/peers/p1" });
 });
 

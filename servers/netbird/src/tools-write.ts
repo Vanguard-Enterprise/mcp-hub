@@ -10,13 +10,15 @@ const CREATE = { readOnlyHint: false, destructiveHint: false, idempotentHint: fa
 const UPDATE = { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true };
 const DELETE = { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true };
 
-const REPLACES = "Replaces the whole object: fetch it first with the matching netbird_get_* tool and send every field back with your changes.";
+const REPLACES =
+  "Replaces the whole object: fetch it first with the matching netbird_get_* tool and send every field back with your changes. " +
+  "List fields take IDs (group IDs, peer IDs), not the objects the get tool returns.";
 
 const groupIds = (what: string) => z.array(z.string().min(1)).describe(what);
 
 const resource = z.object({
   id: z.string().min(1).describe("ID of the resource"),
-  type: z.string().min(1).describe("Resource type, e.g. peer, host, subnet, or domain"),
+  type: z.enum(["host", "subnet", "domain", "peer"]).describe("Resource type"),
 });
 
 const GROUP = {
@@ -52,13 +54,13 @@ const POLICY = {
 
 const ROUTE = {
   description: z.string().describe("Route description"),
-  network_id: z.string().min(1).describe("Route network identifier; HA routes share one"),
+  network_id: z.string().min(1).max(40).describe("Route network identifier; HA routes share one"),
   enabled: z.boolean(),
   peer: z.string().optional().describe("Routing peer ID. Mutually exclusive with peer_groups"),
   peer_groups: z.array(z.string()).optional().describe("Routing peer group IDs. Mutually exclusive with peer"),
   network: z.string().optional().describe("Network range in CIDR notation. Mutually exclusive with domains"),
   domains: z.array(z.string()).max(32).optional().describe("Domains to resolve dynamically. Mutually exclusive with network"),
-  metric: z.number().int().describe("Route metric; the lowest number wins"),
+  metric: z.number().int().min(1).max(9999).describe("Route metric (1-9999); the lowest number wins"),
   masquerade: z.boolean().describe("Masquerade traffic to the route's prefix"),
   groups: groupIds("Distribution group IDs whose peers receive the route"),
   keep_route: z.boolean().describe("Keep the route after a domain stops resolving to an IP"),
@@ -69,7 +71,7 @@ const ROUTE = {
 const SETUP_KEY_CREATE = {
   name: z.string().min(1).describe("Setup key name"),
   type: z.enum(["one-off", "reusable"]),
-  expires_in: z.number().int().min(0).describe("Expiration in seconds"),
+  expires_in: z.number().int().min(0).describe("Expiration in seconds; 0 means the key never expires"),
   auto_groups: groupIds("Group IDs assigned to peers that register with this key"),
   usage_limit: z.number().int().min(0).describe("How many times the key can be used; 0 means unlimited"),
   ephemeral: z.boolean().optional().describe("Peers registered with the key are ephemeral"),
@@ -77,17 +79,18 @@ const SETUP_KEY_CREATE = {
 };
 
 const SETUP_KEY_UPDATE = {
-  revoked: z.boolean().describe("Revoke (true) or keep (false) the key"),
+  revoked: z.boolean().describe("true revokes the key, which cannot be undone; false keeps it active"),
   auto_groups: groupIds("Group IDs assigned to peers that register with this key"),
 };
 
 const NAMESERVER_GROUP = {
-  name: z.string().min(1).describe("Nameserver group name"),
+  name: z.string().min(1).max(40).describe("Nameserver group name"),
   description: z.string().describe("Description"),
   nameservers: z
     .array(z.object({ ip: z.string().min(1), ns_type: z.literal("udp"), port: z.number().int().min(1).max(65535) }))
     .min(1)
-    .describe("Upstream resolvers"),
+    .max(3)
+    .describe("Upstream resolvers (1 to 3)"),
   enabled: z.boolean(),
   groups: groupIds("Distribution group IDs whose peers use these resolvers"),
   primary: z.boolean().describe("Resolve all domains; true only when domains is empty"),
@@ -122,8 +125,16 @@ const PEER = {
 
 type Annotations = typeof CREATE;
 
-/** Registers the tools that create, update, and delete NetBird objects. */
-export function registerWriteTools(server: McpServer, netbird: NetBirdClient): void {
+function isEmpty(data: unknown): boolean {
+  return data === null || data === undefined || (typeof data === "object" && !Array.isArray(data) && Object.keys(data as object).length === 0);
+}
+
+/**
+ * Registers the tools that create, update, and delete NetBird objects.
+ * `subject` is the authenticated user's OAuth subject; every write is logged with it,
+ * because NetBird's own activity log attributes everything to the PAT owner.
+ */
+export function registerWriteTools(server: McpServer, netbird: NetBirdClient, subject?: string): void {
   function write<Shape extends z.ZodRawShape>(
     name: string,
     description: string,
@@ -131,10 +142,16 @@ export function registerWriteTools(server: McpServer, netbird: NetBirdClient): v
     inputSchema: Shape,
     request: (args: z.infer<z.ZodObject<Shape>>) => { method: WriteMethod; path: string; body?: unknown },
   ): void {
-    const callback = (args: z.infer<z.ZodObject<Shape>>): Promise<CallToolResult> => {
+    const callback = async (args: z.infer<z.ZodObject<Shape>>): Promise<CallToolResult> => {
       const { method, path, body } = request(args);
-      // DELETE responses are empty; report what happened instead of "null".
-      return netbirdResult(async () => (await netbird.request(method, path, body)) ?? { status: "ok", method, path });
+      // DELETE answers with an empty object; report what happened instead of "{}".
+      const result = await netbirdResult(async () => {
+        const data = await netbird.request(method, path, body);
+        return isEmpty(data) ? { status: "ok", method, path } : data;
+      });
+      // Audit line: who changed what. Never the body.
+      console.log(`${new Date().toISOString()} write ${name} ${method} ${path} sub=${subject ?? "-"} ${result.isError ? "error" : "ok"}`);
+      return result;
     };
     // ToolCallback<Shape> is a conditional type that TypeScript cannot resolve
     // for a generic Shape, so the (already validated) argument type is asserted.
@@ -190,7 +207,12 @@ export function registerWriteTools(server: McpServer, netbird: NetBirdClient): v
     SETUP_KEY_CREATE,
     (b) => ({ method: "POST", path: "/api/setup-keys", body: b }),
   );
-  write("netbird_update_setup_key", "Revoke or un-revoke a setup key and set its auto-assigned groups.", UPDATE, { key_id: id("setup key"), ...SETUP_KEY_UPDATE }, ({ key_id, ...b }) => ({
+  write(
+    "netbird_update_setup_key",
+    "Revoke a setup key (irreversible) and/or replace its auto-assigned groups. Fetch it first with netbird_get_setup_key and send the full auto_groups list.",
+    UPDATE,
+    { key_id: id("setup key"), ...SETUP_KEY_UPDATE },
+    ({ key_id, ...b }) => ({
     method: "PUT",
     path: `/api/setup-keys/${seg(key_id)}`,
     body: b,

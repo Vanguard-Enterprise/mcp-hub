@@ -63,9 +63,11 @@ anything is sent; invalid input is a tool error and never reaches NetBird.
 only once. Not exposed: users, tokens, accounts, posture checks, networks,
 ingress, integrations, and anything that is cloud-only.
 
-Tool results are the API's JSON, unchanged (`DELETE` returns a short status
-object because the API answers with an empty body). NetBird errors (4xx/5xx)
-come back as tool errors with the status and body, not as protocol errors.
+Tool results are the API's JSON, unchanged, except that `DELETE` (which the API
+answers with an empty object) returns a short status object. Every write is
+logged with the tool name, method, path, and the caller's OAuth subject, never
+the body. NetBird errors (4xx/5xx) come back as tool errors with the status and
+body, not as protocol errors.
 
 ## How authentication works
 

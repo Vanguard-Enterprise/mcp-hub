@@ -72,7 +72,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, config: ServerC
   // Stateless mode: a fresh MCP server and transport per request, no sessions to track.
   const mcp = new McpServer(SERVER_INFO, { instructions: INSTRUCTIONS });
   registerTools(mcp, config.netbird);
-  registerWriteTools(mcp, config.netbird);
+  registerWriteTools(mcp, config.netbird, verified.subject);
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
   res.on("close", () => void mcp.close());
   await mcp.connect(transport);
