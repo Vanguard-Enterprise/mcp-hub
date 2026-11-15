@@ -40,11 +40,14 @@ Read-only (`readOnlyHint: true`), one `GET` each.
 
 ### Write tools
 
-These change live network configuration. Creates carry `destructiveHint: false`;
-updates and deletes carry `destructiveHint: true`, and MCP clients such as Claude
-Code ask for confirmation before using any tool that is not read-only. Updates
-are `PUT`s that replace the whole object: read it first with the matching
-`netbird_get_*` tool and send every field back with the change.
+These change live network configuration. They are annotated as mutating
+(`readOnlyHint: false`; updates and deletes also `destructiveHint: true`).
+Annotations describe behaviour, they do not enforce a prompt: whether a client
+asks before running a tool is that client's approval policy. Claude Code asks
+by default for tools that are not read-only, so keep the write tools out of any
+auto-approve or allowlist configuration. Updates are `PUT`s that replace the
+whole object: read it first with the matching `netbird_get_*` tool and send
+every field back with the change.
 
 | Tool | Endpoint |
 | --- | --- |
