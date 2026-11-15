@@ -120,7 +120,14 @@ const fake: Server = createServer((req, res) => {
   if (path.endsWith("/managed-resources")) return send(200, MANAGED);
   if (path.endsWith("/resource-tree")) return send(200, TREE);
   if (path.endsWith("/resource")) {
-    return send(200, { manifest: '{"kind":"Deployment","metadata":{"name":"web","managedFields":[1]},"spec":{"env":[{"value":"postgres://app:db-secret@db/app"}]}}' });
+    return send(200, {
+      manifest: JSON.stringify({
+        kind: "Deployment",
+        metadata: { name: "web", managedFields: [1] },
+        spec: { env: [{ value: "postgres://app:db-secret@db/app" }] },
+        data: { "app.conf": "DATABASE_URL=postgres://app:conf-secret@db/app\nLOG=info" },
+      }),
+    });
   }
   if (path.endsWith("/events")) return send(200, EVENTS);
   if (path.endsWith("/logs")) {
@@ -253,7 +260,7 @@ test("argocd_list_applications summarizes apps and problems_only keeps the ones 
 
 test("stripCredentials removes embedded passwords and leaves other URLs alone", () => {
   assert.equal(stripCredentials("https://user:pw@git.example.com/repo.git"), "https://git.example.com/repo.git");
-  assert.equal(stripCredentials("http://user:pw@proxy:8080"), "http://proxy:8080/");
+  assert.equal(stripCredentials("http://user:pw@proxy:8080"), "http://proxy:8080");
   assert.equal(stripCredentials("https://github.com/org/deploy"), "https://github.com/org/deploy");
   assert.equal(stripCredentials("ssh://git@github.com/org/deploy.git"), "ssh://git@github.com/org/deploy.git");
   assert.equal(stripCredentials("git@github.com:org/deploy.git"), "git@github.com:org/deploy.git");
@@ -264,6 +271,13 @@ test("stripCredentials removes embedded passwords and leaves other URLs alone", 
   assert.equal(stripCredentials("ssh://git:pw@bad host/x"), "ssh://git@bad host/x");
   assert.equal(stripCredentials("mailto:ops@example.com"), "mailto:ops@example.com");
   assert.equal(stripCredentials("contact ops@example.com"), "contact ops@example.com");
+  // A password containing "@" is removed whole, in parseable and unparseable URLs alike.
+  assert.equal(stripCredentials("ssh://git:p@ss@bad host/x"), "ssh://git@bad host/x");
+  assert.equal(stripCredentials("https://u:p@ss@host/x"), "https://host/x");
+  // URLs inside text, as in a config file stored in a ConfigMap; the text around them is kept.
+  assert.equal(stripCredentials("DATABASE_URL=postgres://app:pw@db/app\nCACHE=redis://:pw2@cache:6379"), "DATABASE_URL=postgres://db/app\nCACHE=redis://cache:6379");
+  // "@" after the host (path, query, fragment) is not userinfo.
+  assert.equal(stripCredentials("https://example.com/users/@me?by=a@b#c@d"), "https://example.com/users/@me?by=a@b#c@d");
 });
 
 test("every JSON response hides credentials embedded in URLs, at any depth", async () => {
@@ -271,7 +285,8 @@ test("every JSON response hides credentials embedded in URLs, at any depth", asy
   assert.doesNotMatch(app, /app-token|history-token/);
   assert.match(app, /https:\/\/github.com\/org\/deploy/);
   const manifest = text(await call("argocd_get_resource", { name: "web", version: "v1", kind: "Deployment", resource_name: "web" }));
-  assert.doesNotMatch(manifest, /db-secret/);
+  assert.doesNotMatch(manifest, /db-secret|conf-secret/);
+  assert.match(manifest, /DATABASE_URL=postgres:\/\/db\/app\\nLOG=info/);
 });
 
 test("app-scoped tools pass app_namespace, and ApplicationSet tools appset_namespace", async () => {

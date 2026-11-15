@@ -29,30 +29,24 @@ function pick(source: unknown, keys: readonly string[]): Obj {
 const LAST_APPLIED = "kubectl.kubernetes.io/last-applied-configuration";
 
 // SSH user names (ssh://git@host) name an account, not a credential, so only their password is removed.
-const SSH_SCHEME = /^(ssh|git\+ssh|ssh\+git):$/i;
+const SSH_SCHEME = /^(ssh|git\+ssh|ssh\+git):\/\/$/i;
+// A scheme, then the userinfo: everything up to the last "@" of the authority, which never crosses "/", "?", "#",
+// or whitespace. Greedy, so a password containing "@" is removed whole. Matches anywhere in a string, so URLs inside
+// config text (DATABASE_URL=postgres://app:pw@db/app) are covered too.
+const URL_USERINFO = /\b([a-z][a-z0-9+.-]*:\/\/)([^\s/?#]*)@/gi;
 
 /**
- * Removes credentials embedded in a URL: `https://user:pass@host`, `https://TOKEN@host`, `socks5://user:pass@proxy`,
- * `postgres://user:pass@db`. Argo CD returns repository, proxy, and source URLs as stored, and live manifests can hold
- * connection strings. Other strings are returned unchanged.
+ * Removes credentials embedded in URLs anywhere in a string: `https://user:pass@host`, `https://TOKEN@host`,
+ * `socks5://user:pass@proxy`, `postgres://user:pass@db`. Argo CD returns repository, proxy, and source URLs as
+ * stored, and live manifests can hold connection strings. The rest of the string is unchanged.
  */
 export function stripCredentials(value: string): string {
   if (!value.includes("@")) return value;
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
-    // Not a WHATWG URL (whitespace, scp-style git@host:path): still drop a leading scheme://userinfo@.
-    return value.replace(/^([a-z][a-z0-9+.-]*:\/\/)([^/@\s]+)@/i, (match, scheme: string, userinfo: string) =>
-      SSH_SCHEME.test(scheme.slice(0, -2)) ? `${scheme}${userinfo.split(":")[0]}@` : scheme,
-    );
-  }
-  if (!url.host) return value;
-  const ssh = SSH_SCHEME.test(url.protocol);
-  if (!url.password && (!url.username || ssh)) return value;
-  url.password = "";
-  if (!ssh) url.username = "";
-  return url.href;
+  return value.replace(URL_USERINFO, (match, scheme: string, userinfo: string) => {
+    if (!SSH_SCHEME.test(scheme)) return scheme;
+    const user = userinfo.split(":")[0] ?? "";
+    return user === userinfo ? match : `${scheme}${user}@`;
+  });
 }
 
 /** Applies stripCredentials to every string in a response, at any depth. */
