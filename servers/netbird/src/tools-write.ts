@@ -10,6 +10,10 @@ const CREATE = { readOnlyHint: false, destructiveHint: false, idempotentHint: fa
 const UPDATE = { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true };
 const DELETE = { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true };
 
+// Claude Code honours this flag in every permission mode (auto, acceptEdits, bypassPermissions):
+// it prompts on each call and offers no "don't ask again". Annotations alone do not gate approval.
+const REQUIRES_USER_INTERACTION = { "anthropic/requiresUserInteraction": true };
+
 const REPLACES =
   "Replaces the whole object: fetch it first with the matching netbird_get_* tool and send every field back with your changes. " +
   "List fields take IDs (group IDs, peer IDs), not the objects the get tool returns.";
@@ -155,7 +159,11 @@ export function registerWriteTools(server: McpServer, netbird: NetBirdClient, su
     };
     // ToolCallback<Shape> is a conditional type that TypeScript cannot resolve
     // for a generic Shape, so the (already validated) argument type is asserted.
-    server.registerTool(name, { description, inputSchema, annotations }, callback as unknown as ToolCallback<Shape>);
+    server.registerTool(
+      name,
+      { description, inputSchema, annotations, _meta: REQUIRES_USER_INTERACTION },
+      callback as unknown as ToolCallback<Shape>,
+    );
   }
 
   // Groups

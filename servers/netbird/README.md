@@ -40,11 +40,32 @@ Read-only (`readOnlyHint: true`), one `GET` each.
 
 ### Write tools
 
-These change live network configuration. Creates carry `destructiveHint: false`;
-updates and deletes carry `destructiveHint: true`, and MCP clients such as Claude
-Code ask for confirmation before using any tool that is not read-only. Updates
-are `PUT`s that replace the whole object: read it first with the matching
-`netbird_get_*` tool and send every field back with the change.
+These change live network configuration. They are annotated as mutating
+(`readOnlyHint: false`; updates and deletes also `destructiveHint: true`), but
+annotations describe behaviour and do not enforce a prompt. Whether a client
+asks before running a tool depends on that client's permission mode; Claude
+Code 2.1.283 and later starts in auto mode, where a classifier can approve
+calls without asking. Every write tool therefore also carries the
+`anthropic/requiresUserInteraction` flag in its `tools/list` entry, which makes
+Claude Code prompt on every call in every permission mode (auto, acceptEdits,
+bypassPermissions; in dontAsk mode the call is denied) with no "don't ask
+again". This needs a recent Claude Code: the flag is documented on its MCP
+page and release 2.1.246 fixed the "don't ask again" option still being
+offered for such tools; older releases ignore the flag. Other clients may
+ignore it too, so also keep write tools out of allow lists and add explicit
+rules where you want them, for example in Claude Code's `settings.json`:
+
+```json
+{
+  "permissions": {
+    "ask": ["mcp__netbird__netbird_create_*", "mcp__netbird__netbird_update_*"],
+    "deny": ["mcp__netbird__netbird_delete_*"]
+  }
+}
+```
+
+Updates are `PUT`s that replace the whole object: read it first with the
+matching `netbird_get_*` tool and send every field back with the change.
 
 | Tool | Endpoint |
 | --- | --- |
