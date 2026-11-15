@@ -102,9 +102,11 @@ function parseState(value: unknown): unknown {
 }
 
 /**
- * Managed resources as target (rendered from Git) and live state, both parsed from the JSON strings the API returns.
- * `live` is the predicted state after a sync when Argo CD computed one (server-side diff), else the normalized live state.
- * Argo CD replaces Secret values before they leave the API server.
+ * Managed resources as target and live state, parsed from the JSON strings the API returns. Same pair as the
+ * Argo CD UI diff: `target` is the predicted state after a sync (Git merged onto the live object, so defaults
+ * and fields Argo CD does not manage do not show up as drift), falling back to the raw state rendered from Git;
+ * `live` is the normalized current state, falling back to the raw live state. A side is null when the resource
+ * is missing there (to be created, or to be pruned). Argo CD replaces Secret values before they leave the API server.
  */
 export function summarizeDiff(data: unknown, includeSynced: boolean): Obj[] {
   return items(data)
@@ -116,8 +118,8 @@ export function summarizeDiff(data: unknown, includeSynced: boolean): Obj[] {
       const state = (value: unknown) => (secret ? hideSecretData(parseState(value)) : parseState(value));
       return {
         ...pick(r, ["group", "kind", "namespace", "name", "modified"]),
-        target: state(r.targetState),
-        live: state(r.predictedLiveState) ?? state(r.normalizedLiveState) ?? state(r.liveState),
+        target: state(r.predictedLiveState) ?? state(r.targetState),
+        live: state(r.normalizedLiveState) ?? state(r.liveState),
       };
     });
 }
@@ -157,7 +159,12 @@ export function summarizeRepositories(data: unknown): Obj[] {
 
 /** Clusters without their connection config (bearer tokens, TLS keys, exec credentials): an allowlist. */
 export function summarizeClusters(data: unknown): Obj[] {
-  return items(data).map((c) => pick(c, CLUSTER_FIELDS));
+  return items(data).map((c) => {
+    const cluster = pick(c, CLUSTER_FIELDS);
+    // `info.apiVersions` lists every served API version (about 10 KB per cluster); keep the status fields.
+    if (cluster.info !== undefined) cluster.info = pick(cluster.info, ["connectionState", "serverVersion", "cacheInfo", "applicationsCount"]);
+    return cluster;
+  });
 }
 
 /**
@@ -245,7 +252,7 @@ export function registerReadTools(server: McpServer, argocd: ArgoCdClient): void
   );
   get(
     "argocd_get_application_diff",
-    "What differs between Git and the cluster: for each managed resource that is out of sync, its target state (rendered from Git) and its live state. " +
+    "What differs between Git and the cluster: for each managed resource that is out of sync, its target state (Git applied to the live object, as the Argo CD UI diff shows it) and its current live state. " +
       "Narrow it with kind, resource_name, or namespace; include_synced=true also returns resources that match. Secret values are masked by Argo CD.",
     {
       name: appName,

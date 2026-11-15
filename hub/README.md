@@ -242,7 +242,7 @@ server's `/swagger.json`.
 | `argocd_list_applications` | `/api/v1/applications` | One summary per app: sources, destination, sync, health, last operation, conditions, auto-sync, images. `problems_only` keeps apps that are not `Synced` and `Healthy`, whose last sync failed, or that report conditions. Filters: `project`, `selector`, `repo`. |
 | `argocd_get_application` | `/api/v1/applications/{name}` | The full application, without `managedFields`. |
 | `argocd_get_resource_tree` | `/api/v1/applications/{name}/resource-tree` | Compact nodes (kind, name, version, UID, parents, health, info, images); `unhealthy_only`. |
-| `argocd_get_application_diff` | `/api/v1/applications/{name}/managed-resources` | Out-of-sync resources with `target` (from Git) and `live` state parsed from JSON; filters `kind`, `resource_name`, `namespace`; `include_synced`. |
+| `argocd_get_application_diff` | `/api/v1/applications/{name}/managed-resources` | Out-of-sync resources with `target` and `live` state parsed from JSON, the same pair as the Argo CD UI diff (predicted state after a sync against the normalized live state); filters `kind`, `resource_name`, `namespace`; `include_synced`. |
 | `argocd_get_resource` | `/api/v1/applications/{name}/resource` | Live manifest of one resource. Refuses core `Secret`s before calling Argo CD. |
 | `argocd_list_events` | `/api/v1/applications/{name}/events` | Events newest first, for the app or one of its resources. |
 | `argocd_get_logs` | `/api/v1/applications/{name}/logs` | `follow=false`, `tail_lines` 100 by default and at most 1000 per pod; `pod_name`, or `kind` and `resource_name` for all pods of a parent. Returns `timestamp pod line` strings. |

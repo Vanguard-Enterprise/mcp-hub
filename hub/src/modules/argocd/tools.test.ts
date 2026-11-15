@@ -49,7 +49,18 @@ const APPS = {
 
 const MANAGED = {
   items: [
-    { kind: "Deployment", group: "apps", namespace: "n", name: "web", modified: true, targetState: '{"spec":{"replicas":2}}', predictedLiveState: '{"spec":{"replicas":1}}' },
+    {
+      kind: "Deployment",
+      group: "apps",
+      namespace: "n",
+      name: "web",
+      modified: true,
+      targetState: '{"spec":{"replicas":2}}',
+      predictedLiveState: '{"spec":{"replicas":2,"paused":false}}',
+      normalizedLiveState: '{"spec":{"replicas":1,"paused":false}}',
+      liveState: '{"spec":{"replicas":1,"paused":false},"status":{}}',
+    },
+    { kind: "Service", group: "", namespace: "n", name: "gone", modified: true, targetState: "null", liveState: '{"spec":{}}' },
     { kind: "ConfigMap", group: "", namespace: "n", name: "cfg", modified: false, targetState: '{"data":{"a":"1"}}', normalizedLiveState: '{"data":{"a":"1"}}' },
     { kind: "Secret", group: "", namespace: "n", name: "creds", modified: true, targetState: '{"data":{"password":"cGxhaW4="}}', liveState: '{"data":{"password":"c2VjcmV0"}}' },
   ],
@@ -76,7 +87,15 @@ const LOGS =
   '{"result":{"content":"","last":true,"podName":"web-1"}}\n';
 
 const CLUSTERS = {
-  items: [{ name: "in-cluster", server: "https://kubernetes.default.svc", config: { bearerToken: "cluster-secret", tlsClientConfig: { keyData: "key" } }, connectionState: { status: "Successful" } }],
+  items: [
+    {
+      name: "in-cluster",
+      server: "https://kubernetes.default.svc",
+      config: { bearerToken: "cluster-secret", tlsClientConfig: { keyData: "key" } },
+      connectionState: { status: "Successful" },
+      info: { serverVersion: "v1.36", applicationsCount: 2, apiVersions: ["apps/v1/Deployment"] },
+    },
+  ],
 };
 const REPOS = { items: [{ repo: "https://github.com/org/deploy", type: "git", password: "repo-secret", sshPrivateKey: "ssh-secret", githubAppPrivateKey: "app-secret", connectionState: { status: "Successful" } }] };
 
@@ -234,11 +253,22 @@ test("argocd_get_application_diff returns modified resources with parsed states 
   const diff = (await data("argocd_get_application_diff", { name: "web" })) as Record<string, unknown>[];
   assert.deepEqual(
     diff.map((r) => r.name),
-    ["web", "creds"],
+    ["web", "gone", "creds"],
   );
-  assert.deepEqual(diff[0], { group: "apps", kind: "Deployment", namespace: "n", name: "web", modified: true, target: { spec: { replicas: 2 } }, live: { spec: { replicas: 1 } } });
-  assert.deepEqual(diff[1]?.target, { data: { password: HIDDEN } });
-  assert.deepEqual(diff[1]?.live, { data: { password: HIDDEN } });
+  // Like the Argo CD UI: predicted state against normalized live state, so the drift (replicas 2 vs 1) shows.
+  assert.deepEqual(diff[0], {
+    group: "apps",
+    kind: "Deployment",
+    namespace: "n",
+    name: "web",
+    modified: true,
+    target: { spec: { replicas: 2, paused: false } },
+    live: { spec: { replicas: 1, paused: false } },
+  });
+  // A resource to be pruned has no target; the raw states are the fallback.
+  assert.deepEqual({ target: diff[1]?.target, live: diff[1]?.live }, { target: null, live: { spec: {} } });
+  assert.deepEqual(diff[2]?.target, { data: { password: HIDDEN } });
+  assert.deepEqual(diff[2]?.live, { data: { password: HIDDEN } });
   const raw = text(await call("argocd_get_application_diff", { name: "web", include_synced: true }));
   assert.doesNotMatch(raw, /cGxhaW4=|c2VjcmV0/);
   assert.match(raw, /"cfg"/);
@@ -292,6 +322,7 @@ test("clusters and repositories never include credentials", async () => {
   const clusters = text(await call("argocd_list_clusters"));
   const repos = text(await call("argocd_list_repositories"));
   assert.doesNotMatch(clusters, /cluster-secret|keyData|config/);
+  assert.deepEqual(JSON.parse(clusters)[0].info, { serverVersion: "v1.36", applicationsCount: 2 });
   assert.doesNotMatch(repos, /repo-secret|ssh-secret|app-secret/);
   assert.deepEqual(JSON.parse(repos), [{ repo: "https://github.com/org/deploy", type: "git", connectionState: { status: "Successful" } }]);
 });
