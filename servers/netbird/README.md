@@ -49,9 +49,11 @@ calls without asking. Every write tool therefore also carries the
 `anthropic/requiresUserInteraction` flag in its `tools/list` entry, which makes
 Claude Code prompt on every call in every permission mode (auto, acceptEdits,
 bypassPermissions; in dontAsk mode the call is denied) with no "don't ask
-again". Other clients may ignore that flag, so also keep write tools out of
-allow lists and add explicit rules where you want them, for example in
-Claude Code's `settings.json`:
+again". This needs a recent Claude Code: the flag is documented on its MCP
+page and release 2.1.246 fixed the "don't ask again" option still being
+offered for such tools; older releases ignore the flag. Other clients may
+ignore it too, so also keep write tools out of allow lists and add explicit
+rules where you want them, for example in Claude Code's `settings.json`:
 
 ```json
 {
