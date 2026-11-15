@@ -1,8 +1,8 @@
 {
   "name": "netbird-mcp-server",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "Read-only MCP server for the NetBird Management API (Streamable HTTP, bearer auth)",
+  "description": "Read-only MCP server for the NetBird Management API (Streamable HTTP, Pocket ID OAuth)",
   "type": "module",
   "engines": {
     "node": ">=22.9"
@@ -16,10 +16,12 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",
+    "jose": "^6.2.0",
     "zod": "^4.0.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
     "typescript": "^5.9.0"
-  }
+  },
+  "packageManager": "pnpm@12.16.1"
 }

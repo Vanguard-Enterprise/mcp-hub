@@ -1,17 +1,17 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { bearerToken, tokensMatch } from "./auth.js";
+import { bearerToken } from "./auth.js";
 import type { NetBirdClient } from "./netbird.js";
+import { AuthError, bearerChallenge, protectedResourceMetadata, protectedResourceMetadataUrl, type TokenVerifier } from "./oauth.js";
 import { registerTools } from "./tools.js";
 
 export interface ServerConfig {
-  /** Token that clients must present as `Authorization: Bearer <token>`. */
-  mcpAuthToken: string;
+  verifier: TokenVerifier;
   netbird: NetBirdClient;
 }
 
-export const SERVER_INFO = { name: "netbird", version: "0.1.0" };
+export const SERVER_INFO = { name: "netbird", version: "0.2.0" };
 
 const INSTRUCTIONS =
   "Read-only view of a NetBird (WireGuard mesh) account via its Management API. " +
@@ -32,16 +32,39 @@ export function createHttpServer(config: ServerConfig): Server {
 
 async function handle(req: IncomingMessage, res: ServerResponse, config: ServerConfig): Promise<void> {
   const path = new URL(req.url ?? "/", "http://localhost").pathname;
-  // Access log: method, path, status only. Headers are never logged.
-  res.on("finish", () => console.log(`${new Date().toISOString()} ${req.method} ${path} ${res.statusCode}`));
+  const auth = config.verifier.config;
+  const log: string[] = [];
+  // Access log: method, path, status, and token subject/audience/typ when authenticated. Never headers or tokens.
+  res.on("finish", () => console.log(`${new Date().toISOString()} ${req.method} ${path} ${res.statusCode}${log.length ? " " + log.join(" ") : ""}`));
 
   if (path === "/healthz") return respond(res, 200, { status: "ok" });
+  if (path === "/readyz") {
+    return config.verifier.ready ? respond(res, 200, { status: "ready" }) : respond(res, 503, { status: "waiting for OIDC discovery" });
+  }
+  // RFC 9728: both the root form and the path-aware form for /mcp.
+  if (path === "/.well-known/oauth-protected-resource" || path === new URL(protectedResourceMetadataUrl(auth.resourceUrl)).pathname) {
+    return respond(res, 200, protectedResourceMetadata(auth));
+  }
   if (path !== "/mcp") return respond(res, 404, { error: "not found" });
 
-  if (!tokensMatch(bearerToken(req.headers.authorization), config.mcpAuthToken)) {
-    res.setHeader("WWW-Authenticate", 'Bearer realm="netbird-mcp"');
-    return respond(res, 401, { error: "unauthorized" });
+  const token = bearerToken(req.headers.authorization);
+  if (token === undefined) {
+    res.setHeader("WWW-Authenticate", bearerChallenge(auth));
+    return respond(res, 401, { error: "unauthorized", error_description: "bearer token required" });
   }
+  let verified;
+  try {
+    verified = await config.verifier.verify(token);
+  } catch (error) {
+    if (!(error instanceof AuthError)) throw error;
+    if (error.status === 401) {
+      res.setHeader("WWW-Authenticate", bearerChallenge(auth, { code: "invalid_token", description: error.message }));
+      return respond(res, 401, { error: "invalid_token", error_description: error.message });
+    }
+    res.setHeader("Retry-After", "5");
+    return respond(res, 503, { error: error.code, error_description: error.message });
+  }
+  log.push(`sub=${verified.subject}`, `aud=${verified.audience.join(",")}`, `typ=${verified.typ ?? "-"}`);
 
   // Stateless mode: a fresh MCP server and transport per request, no sessions to track.
   const mcp = new McpServer(SERVER_INFO, { instructions: INSTRUCTIONS });
