@@ -70,7 +70,13 @@ export class TokenVerifier {
     }
     if (typeof discovery.jwks_uri !== "string") throw new Error("OIDC discovery document has no jwks_uri");
     if (typeof discovery.userinfo_endpoint !== "string") throw new Error("OIDC discovery document has no userinfo_endpoint");
-    this.#userinfoUrl = new URL(discovery.userinfo_endpoint);
+    const userinfoUrl = new URL(discovery.userinfo_endpoint);
+    // The hub sends bearer tokens to userinfo, so it must be TLS (OIDC Core 16.17); plain HTTP
+    // only for loopback, which keeps local development and tests working.
+    if (userinfoUrl.protocol !== "https:" && !isLoopback(userinfoUrl)) {
+      throw new Error(`OIDC discovery advertises a non-HTTPS userinfo_endpoint ${userinfoUrl.href}`);
+    }
+    this.#userinfoUrl = userinfoUrl;
     this.#jwks = createRemoteJWKSet(new URL(discovery.jwks_uri));
   }
 
@@ -102,7 +108,13 @@ export class TokenVerifier {
       throw new AuthError(401, "invalid_token", `userinfo rejected the token (HTTP ${response.status}); log in again with the openid and groups scopes`);
     }
     if (!response.ok) throw new AuthError(503, "temporarily_unavailable", `userinfo returned HTTP ${response.status}`);
-    const info = (await response.json().catch(() => ({}))) as { sub?: unknown; groups?: unknown };
+    let info: { sub?: unknown; groups?: unknown };
+    try {
+      info = (await response.json()) as { sub?: unknown; groups?: unknown };
+    } catch {
+      // A truncated or unparseable body is an issuer-side problem, not a bad token: retry, don't re-login.
+      throw new AuthError(503, "temporarily_unavailable", "could not read the userinfo response");
+    }
     if (info.sub !== subject) throw new AuthError(401, "invalid_token", "userinfo subject does not match the token subject");
     const groups = Array.isArray(info.groups) ? info.groups.filter((g): g is string => typeof g === "string") : [];
 
@@ -151,6 +163,10 @@ export class TokenVerifier {
       throw new AuthError(503, "temporarily_unavailable", "could not fetch the issuer's signing keys");
     }
   }
+}
+
+function isLoopback(url: URL): boolean {
+  return url.hostname === "localhost" || url.hostname === "[::1]" || /^127\.\d+\.\d+\.\d+$/.test(url.hostname);
 }
 
 /** RFC 9728 protected resource metadata document. */

@@ -190,7 +190,16 @@ pnpm start                                         # http://0.0.0.0:8080/mcp
 
 Container image: `docker build -t mcp-hub hub` (multi-stage, distroless Node
 24, runs as uid 65532). CI publishes `ghcr.io/vanguard-enterprise/mcp-hub:main`
-and `:sha-<commit>` on every push to `main`.
+and `:sha-<commit>` on every push to `main`. The image contains neither `.env`
+nor a policy, so mount the policy read-only and point `ACCESS_POLICY_FILE` at
+its path inside the container:
+
+```sh
+docker run --rm -p 8080:8080 --env-file .env \
+  -v "$PWD/access-policy.json:/etc/mcp-hub/access-policy.json:ro" \
+  -e ACCESS_POLICY_FILE=/etc/mcp-hub/access-policy.json \
+  ghcr.io/vanguard-enterprise/mcp-hub:main
+```
 
 ## Add to Claude Code
 

@@ -21,6 +21,10 @@ const GROUPS: Record<string, string[]> = {
   nobody: ["unrelated"],
 };
 let userinfoStatus = 200;
+// Set to send a 200 with a body that is not JSON.
+let userinfoBroken = false;
+// Set to advertise a non-loopback plain-HTTP userinfo endpoint in discovery.
+let plainUserinfo = false;
 let userinfoSubOverride: string | undefined;
 let userinfoCalls = 0;
 let issuer = "";
@@ -32,7 +36,8 @@ let jwksStatus = 200;
 const idp: Server = createServer((req, res) => {
   if (req.url === "/.well-known/openid-configuration") {
     res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ issuer, jwks_uri: `${issuer}/.well-known/jwks.json`, userinfo_endpoint: `${issuer}/api/oidc/userinfo` }));
+    const userinfo = plainUserinfo ? "http://id.example.com/api/oidc/userinfo" : `${issuer}/api/oidc/userinfo`;
+    res.end(JSON.stringify({ issuer, jwks_uri: `${issuer}/.well-known/jwks.json`, userinfo_endpoint: userinfo }));
   } else if (req.url === "/.well-known/jwks.json") {
     res.writeHead(jwksStatus, { "Content-Type": "application/json" });
     res.end(jwksStatus === 200 ? JSON.stringify(jwks) : "unavailable");
@@ -40,7 +45,7 @@ const idp: Server = createServer((req, res) => {
     userinfoCalls++;
     const sub = decodeJwt((req.headers.authorization ?? "").replace(/^Bearer /, "")).sub ?? "";
     res.writeHead(userinfoStatus, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ sub: userinfoSubOverride ?? sub, groups: GROUPS[sub] ?? [] }));
+    res.end(userinfoBroken ? '{"sub":' : JSON.stringify({ sub: userinfoSubOverride ?? sub, groups: GROUPS[sub] ?? [] }));
   } else {
     res.writeHead(404).end();
   }
@@ -276,8 +281,24 @@ test("userinfo problems: rejection is 401, subject mismatch is 401, outage is 50
     res = await rpc("tools/list", {}, `Bearer ${await mint({ sub: "u-502" })}`);
     assert.equal(res.status, 503);
     assert.equal(res.headers.get("retry-after"), "5");
+
+    userinfoStatus = 200;
+    userinfoBroken = true;
+    res = await rpc("tools/list", {}, `Bearer ${await mint({ sub: "u-broken-body" })}`);
+    assert.equal(res.status, 503, "an unreadable body is retryable, not a login problem");
+    assert.equal(res.headers.get("www-authenticate"), null);
   } finally {
     userinfoStatus = 200;
+    userinfoBroken = false;
     userinfoSubOverride = undefined;
+  }
+});
+
+test("discovery refuses a plain-HTTP userinfo endpoint on a non-loopback host", async () => {
+  plainUserinfo = true;
+  try {
+    await assert.rejects(newVerifier().init(), /non-HTTPS userinfo_endpoint/);
+  } finally {
+    plainUserinfo = false;
   }
 });
