@@ -130,7 +130,7 @@ const READS: { tool: string; args?: Record<string, unknown>; path: string }[] = 
   { tool: "pocketid_list_oidc_clients", path: "/api/oidc/clients" },
   { tool: "pocketid_get_oidc_client", args: { client_id: "c1" }, path: "/api/oidc/clients/c1" },
   { tool: "pocketid_list_oidc_client_secrets", args: { client_id: "c1" }, path: "/api/oidc/clients/c1/secrets" },
-  { tool: "pocketid_preview_oidc_client_claims", args: { client_id: "c1", user_id: "u1" }, path: "/api/oidc/clients/c1/preview/u1" },
+  { tool: "pocketid_preview_oidc_client_claims", args: { client_id: "c1", user_id: "u1" }, path: "/api/oidc/clients/c1/preview/u1?scopes=openid+profile+email+groups" },
   { tool: "pocketid_list_oidc_client_apis", args: { client_id: "c1" }, path: "/api/api-access/c1/apis" },
   { tool: "pocketid_get_oidc_client_scim_provider", args: { client_id: "c1" }, path: "/api/oidc/clients/c1/scim-service-provider" },
   { tool: "pocketid_list_apis", path: "/api/apis" },
@@ -177,6 +177,15 @@ test("list tools map pagination, sorting, and filters to Pocket ID's query param
     "filters[clientName]": "Grafana",
     "filters[location]": "external",
   });
+});
+
+test("the claims preview sends the requested scopes space-separated, as Pocket ID requires", async () => {
+  await call("pocketid_preview_oidc_client_claims", { client_id: "c1", user_id: "u1", scopes: ["openid", "groups"] });
+  assert.equal(new URL(last().path, "http://x").searchParams.get("scopes"), "openid groups");
+  const before = seen.length;
+  assert.equal((await call("pocketid_preview_oidc_client_claims", { client_id: "c1", user_id: "u1", scopes: [] })).isError, true);
+  assert.equal((await call("pocketid_preview_oidc_client_claims", { client_id: "c1", user_id: "u1", scopes: ["openid groups"] })).isError, true);
+  assert.equal(seen.length, before);
 });
 
 test("list limits are enforced before anything is sent", async () => {

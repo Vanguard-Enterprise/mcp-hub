@@ -109,9 +109,18 @@ export function registerReadTools(server: McpServer, pocketid: PocketIdClient): 
   );
   get(
     "pocketid_preview_oidc_client_claims",
-    "Preview the ID token, access token, and userinfo claims a user would receive from an OIDC client. Returns claims only, not usable tokens.",
-    { client_id: id("OIDC client"), user_id: id("user") },
-    ({ client_id, user_id }) => ({ path: `/api/oidc/clients/${seg(client_id)}/preview/${seg(user_id)}` }),
+    "Preview the ID token, access token, and userinfo claims a user would receive from an OIDC client for the given scopes. Returns claims only, not usable tokens.",
+    {
+      client_id: id("OIDC client"),
+      user_id: id("user"),
+      scopes: z
+        .array(z.string().regex(/^\S+$/, "a single scope without spaces"))
+        .min(1)
+        .default(["openid", "profile", "email", "groups"])
+        .describe("Scopes the client requests (default openid, profile, email, groups)"),
+    },
+    // Pocket ID requires `scopes` and splits it on spaces.
+    ({ client_id, user_id, scopes }) => ({ path: `/api/oidc/clients/${seg(client_id)}/preview/${seg(user_id)}`, query: { scopes: scopes.join(" ") } }),
   );
   get(
     "pocketid_list_oidc_client_apis",
@@ -142,7 +151,9 @@ export function registerReadTools(server: McpServer, pocketid: PocketIdClient): 
   );
 
   // Sign-up tokens
-  get("pocketid_list_signup_tokens", `List sign-up tokens (invitations): expiry, usage, and groups. Token values are hidden. ${PAGED}`, LIST, (list) => ({
+  // Pocket ID has no search for sign-up tokens.
+  const { search: _search, ...LIST_NO_SEARCH } = LIST;
+  get("pocketid_list_signup_tokens", `List sign-up tokens (invitations): expiry, usage, and groups. Token values are hidden. ${PAGED}`, LIST_NO_SEARCH, (list) => ({
     path: "/api/signup-tokens",
     query: listQuery(list),
     transform: redactToken,

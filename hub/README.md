@@ -160,13 +160,13 @@ are only ever listed by prefix.
 | `pocketid_list_oidc_clients` | `/api/oidc/clients` | list arguments |
 | `pocketid_get_oidc_client` | `/api/oidc/clients/{id}` | `client_id` |
 | `pocketid_list_oidc_client_secrets` | `/api/oidc/clients/{id}/secrets` | `client_id` |
-| `pocketid_preview_oidc_client_claims` | `/api/oidc/clients/{id}/preview/{userId}` | `client_id`, `user_id` |
+| `pocketid_preview_oidc_client_claims` | `/api/oidc/clients/{id}/preview/{userId}` | `client_id`, `user_id`, `scopes` (default `openid profile email groups`) |
 | `pocketid_list_oidc_client_apis` | `/api/api-access/{clientId}/apis` | `client_id` |
 | `pocketid_get_oidc_client_scim_provider` | `/api/oidc/clients/{id}/scim-service-provider` | `client_id` |
 | `pocketid_list_apis` | `/api/apis` | list arguments |
 | `pocketid_get_api` | `/api/apis/{id}` | `api_id` |
 | `pocketid_list_api_clients` | `/api/apis/{id}/clients` | `api_id`, list arguments |
-| `pocketid_list_signup_tokens` | `/api/signup-tokens` | list arguments |
+| `pocketid_list_signup_tokens` | `/api/signup-tokens` | list arguments except `search` |
 | `pocketid_list_audit_logs` | `/api/audit-logs/all` | `page`, `limit`, `sort_*` (default newest first), `event`, `user_id`, `client_name`, `location` |
 | `pocketid_get_app_config` | `/api/application-configuration/all` | |
 
