@@ -176,13 +176,15 @@ test("/mcp rejects tokens that fail verification", async () => {
   }
 });
 
-test("/mcp accepts tokens for the resource audience or the client audience and serves the read-only tools", async () => {
+test("/mcp accepts tokens for the resource audience or the client audience and serves the tools", async () => {
   for (const aud of [RESOURCE.href, CLIENT_ID, [CLIENT_ID, issuer]]) {
     const res = await rpc("tools/list", {}, `Bearer ${await mint({ aud })}`);
     assert.equal(res.status, 200, JSON.stringify(aud));
     const body = (await res.json()) as { result: { tools: { name: string; annotations?: { readOnlyHint?: boolean } }[] } };
-    assert.equal(body.result.tools.length, 17);
-    assert.ok(body.result.tools.every((t) => t.annotations?.readOnlyHint === true));
+    assert.equal(body.result.tools.length, 40);
+    for (const tool of body.result.tools) {
+      assert.equal(tool.annotations?.readOnlyHint, !/^netbird_(create|update|delete)_/.test(tool.name), tool.name);
+    }
   }
 });
 

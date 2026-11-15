@@ -5,26 +5,30 @@ import { NetBirdApiError, type NetBirdClient, type Query } from "./netbird.js";
 
 const READ_ONLY = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true };
 
-const id = (what: string) => z.string().min(1).describe(`ID of the ${what}`);
-const seg = encodeURIComponent;
+export const id = (what: string) => z.string().min(1).describe(`ID of the ${what}`);
+export const seg = encodeURIComponent;
+
+/** Runs a NetBird call and turns API errors into tool errors instead of protocol errors. */
+export async function netbirdResult(call: () => Promise<unknown>): Promise<CallToolResult> {
+  try {
+    return json(await call());
+  } catch (error) {
+    if (error instanceof NetBirdApiError) return { isError: true, content: [{ type: "text", text: error.message }] };
+    throw error;
+  }
+}
 
 export function registerTools(server: McpServer, netbird: NetBirdClient): void {
-  // Every tool is a single GET against the Management API; this helper does the
-  // request and turns NetBird errors into tool errors instead of protocol errors.
+  // Every read tool is a single GET against the Management API.
   function get<Shape extends z.ZodRawShape>(
     name: string,
     description: string,
     inputSchema: Shape,
     request: (args: z.infer<z.ZodObject<Shape>>) => { path: string; query?: Query },
   ): void {
-    const callback = async (args: z.infer<z.ZodObject<Shape>>): Promise<CallToolResult> => {
+    const callback = (args: z.infer<z.ZodObject<Shape>>): Promise<CallToolResult> => {
       const { path, query } = request(args);
-      try {
-        return json(await netbird.get(path, query));
-      } catch (error) {
-        if (error instanceof NetBirdApiError) return { isError: true, content: [{ type: "text", text: error.message }] };
-        throw error;
-      }
+      return netbirdResult(() => netbird.get(path, query));
     };
     // ToolCallback<Shape> is a conditional type that TypeScript cannot resolve
     // for a generic Shape, so the (already validated) argument type is asserted.
@@ -106,6 +110,6 @@ export function registerTools(server: McpServer, netbird: NetBirdClient): void {
   );
 }
 
-function json(data: unknown): CallToolResult {
+export function json(data: unknown): CallToolResult {
   return { content: [{ type: "text", text: JSON.stringify(data) }] };
 }

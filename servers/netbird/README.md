@@ -1,7 +1,9 @@
 # NetBird MCP server
 
 A small [MCP](https://modelcontextprotocol.io) server that exposes the
-[NetBird Management API](https://docs.netbird.io/api) as read-only tools.
+[NetBird Management API](https://docs.netbird.io/api) as tools: read tools for
+every object type, and create, update, and delete tools for the ones an operator
+changes day to day.
 Streamable HTTP transport, stateless, TypeScript on the official MCP TypeScript
 SDK. Authentication is OAuth 2.1: the server is a resource server for
 [Pocket ID](https://pocket-id.org) access tokens, and MCP clients such as Claude
@@ -9,8 +11,12 @@ Code run the authorization-code + PKCE login themselves.
 
 ## Tools
 
-All tools are read-only (`readOnlyHint: true`) and map to `GET` endpoints of the
-current NetBird OpenAPI spec (`netbirdio/netbird`, `shared/management/http/api/openapi.yml`).
+All tools map to endpoints of the current NetBird OpenAPI spec
+(`netbirdio/netbird`, `shared/management/http/api/openapi.yml`).
+
+### Read tools
+
+Read-only (`readOnlyHint: true`), one `GET` each.
 
 | Tool | Endpoint | Arguments |
 | --- | --- | --- |
@@ -32,8 +38,36 @@ current NetBird OpenAPI spec (`netbirdio/netbird`, `shared/management/http/api/o
 | `netbird_list_dns_records` | `/api/dns/zones/{zoneId}/records` | `zone_id` |
 | `netbird_get_dns_record` | `/api/dns/zones/{zoneId}/records/{recordId}` | `zone_id`, `record_id` |
 
-Tool results are the API's JSON, unchanged. NetBird errors (4xx/5xx) come back
-as tool errors with the status and body, not as protocol errors.
+### Write tools
+
+These change live network configuration. Creates carry `destructiveHint: false`;
+updates and deletes carry `destructiveHint: true`, and MCP clients such as Claude
+Code ask for confirmation before using any tool that is not read-only. Updates
+are `PUT`s that replace the whole object: read it first with the matching
+`netbird_get_*` tool and send every field back with the change.
+
+| Tool | Endpoint |
+| --- | --- |
+| `netbird_create_group`, `netbird_update_group`, `netbird_delete_group` | `POST /api/groups`, `PUT`/`DELETE /api/groups/{groupId}` |
+| `netbird_create_policy`, `netbird_update_policy`, `netbird_delete_policy` | `POST /api/policies`, `PUT`/`DELETE /api/policies/{policyId}` |
+| `netbird_create_route`, `netbird_update_route`, `netbird_delete_route` | `POST /api/routes`, `PUT`/`DELETE /api/routes/{routeId}` |
+| `netbird_create_setup_key`, `netbird_update_setup_key`, `netbird_delete_setup_key` | `POST /api/setup-keys`, `PUT`/`DELETE /api/setup-keys/{keyId}` |
+| `netbird_create_nameserver_group`, `netbird_update_nameserver_group`, `netbird_delete_nameserver_group` | `POST /api/dns/nameservers`, `PUT`/`DELETE /api/dns/nameservers/{nsgroupId}` |
+| `netbird_create_dns_zone`, `netbird_update_dns_zone`, `netbird_delete_dns_zone` | `POST /api/dns/zones`, `PUT`/`DELETE /api/dns/zones/{zoneId}` |
+| `netbird_create_dns_record`, `netbird_update_dns_record`, `netbird_delete_dns_record` | `POST /api/dns/zones/{zoneId}/records`, `PUT`/`DELETE .../records/{recordId}` |
+| `netbird_update_peer`, `netbird_delete_peer` | `PUT`/`DELETE /api/peers/{peerId}` |
+
+Request bodies are validated against schemas derived from the spec before
+anything is sent; invalid input is a tool error and never reaches NetBird.
+`netbird_create_setup_key` returns the key's secret value, which the API shows
+only once. Not exposed: users, tokens, accounts, posture checks, networks,
+ingress, integrations, and anything that is cloud-only.
+
+Tool results are the API's JSON, unchanged, except that `DELETE` (which the API
+answers with an empty object) returns a short status object. Every write is
+logged with the tool name, method, path, and the caller's OAuth subject, never
+the body. NetBird errors (4xx/5xx) come back as tool errors with the status and
+body, not as protocol errors.
 
 ## How authentication works
 
@@ -125,4 +159,7 @@ pnpm check     # typecheck, build, unit and HTTP tests (node:test)
 
 The HTTP tests run a fake OIDC provider (discovery + JWKS) and verify the 401
 challenge, the metadata documents, readiness gating, token rejection cases
-(bad signature, issuer, audience, expiry), and the tool list.
+(bad signature, issuer, audience, expiry), and the tool list. The write-tool
+tests connect an in-process MCP client to the server and check, against a fake
+NetBird API, the method, path, headers, and body of each kind of call, input
+validation, and error mapping.
