@@ -22,7 +22,7 @@ const APPS = {
       metadata: { name: "good", managedFields: [{ manager: "x" }] },
       spec: {
         project: "default",
-        source: { repoURL: "https://github.com/org/deploy", path: "apps/good", targetRevision: "main" },
+        source: { repoURL: "https://app-token@github.com/org/deploy", path: "apps/good", targetRevision: "main" },
         destination: { server: "https://kubernetes.default.svc", namespace: "good" },
         syncPolicy: { automated: { prune: true, selfHeal: true } },
       },
@@ -32,6 +32,7 @@ const APPS = {
         operationState: { phase: "Succeeded", message: "ok", syncResult: { resources: [] } },
         summary: { images: ["img:1"] },
         resources: [{ kind: "Deployment", name: "good" }],
+        history: [{ id: 1, source: { repoURL: "https://bot:history-token@github.com/org/deploy" } }],
       },
     },
     {
@@ -118,7 +119,9 @@ const fake: Server = createServer((req, res) => {
   if (path === "/api/v1/applications/web") return send(200, APPS.items[0]);
   if (path.endsWith("/managed-resources")) return send(200, MANAGED);
   if (path.endsWith("/resource-tree")) return send(200, TREE);
-  if (path.endsWith("/resource")) return send(200, { manifest: '{"kind":"Deployment","metadata":{"name":"web","managedFields":[1]}}' });
+  if (path.endsWith("/resource")) {
+    return send(200, { manifest: '{"kind":"Deployment","metadata":{"name":"web","managedFields":[1]},"spec":{"env":[{"value":"postgres://app:db-secret@db/app"}]}}' });
+  }
   if (path.endsWith("/events")) return send(200, EVENTS);
   if (path.endsWith("/logs")) {
     res.writeHead(200, { "Content-Type": "application/json" });
@@ -254,6 +257,21 @@ test("stripCredentials removes embedded passwords and leaves other URLs alone", 
   assert.equal(stripCredentials("https://github.com/org/deploy"), "https://github.com/org/deploy");
   assert.equal(stripCredentials("ssh://git@github.com/org/deploy.git"), "ssh://git@github.com/org/deploy.git");
   assert.equal(stripCredentials("git@github.com:org/deploy.git"), "git@github.com:org/deploy.git");
+  // A token as the user name, with no password.
+  assert.equal(stripCredentials("https://ghp_token@github.com/org/deploy.git"), "https://github.com/org/deploy.git");
+  assert.equal(stripCredentials("ssh://git:pw@github.com/org/deploy.git"), "ssh://git@github.com/org/deploy.git");
+  assert.equal(stripCredentials("postgres://app:pw@db:5432/app"), "postgres://db:5432/app");
+  assert.equal(stripCredentials("ssh://git:pw@bad host/x"), "ssh://git@bad host/x");
+  assert.equal(stripCredentials("mailto:ops@example.com"), "mailto:ops@example.com");
+  assert.equal(stripCredentials("contact ops@example.com"), "contact ops@example.com");
+});
+
+test("every JSON response hides credentials embedded in URLs, at any depth", async () => {
+  const app = text(await call("argocd_get_application", { name: "web" }));
+  assert.doesNotMatch(app, /app-token|history-token/);
+  assert.match(app, /https:\/\/github.com\/org\/deploy/);
+  const manifest = text(await call("argocd_get_resource", { name: "web", version: "v1", kind: "Deployment", resource_name: "web" }));
+  assert.doesNotMatch(manifest, /db-secret/);
 });
 
 test("app-scoped tools pass app_namespace as appNamespace", async () => {

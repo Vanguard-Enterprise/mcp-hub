@@ -28,22 +28,39 @@ function pick(source: unknown, keys: readonly string[]): Obj {
 
 const LAST_APPLIED = "kubectl.kubernetes.io/last-applied-configuration";
 
+// SSH user names (ssh://git@host) name an account, not a credential, so only their password is removed.
+const SSH_SCHEME = /^(ssh|git\+ssh|ssh\+git):$/i;
+
 /**
- * Removes a password embedded in a URL (`https://user:pass@host`, `socks5://user:pass@proxy:1080`), with the user
- * name, because a token is often sent as either. Argo CD returns repository and proxy URLs as stored.
+ * Removes credentials embedded in a URL: `https://user:pass@host`, `https://TOKEN@host`, `socks5://user:pass@proxy`,
+ * `postgres://user:pass@db`. Argo CD returns repository, proxy, and source URLs as stored, and live manifests can hold
+ * connection strings. Other strings are returned unchanged.
  */
-export function stripCredentials(value: unknown): unknown {
-  if (typeof value !== "string") return value;
+export function stripCredentials(value: string): string {
+  if (!value.includes("@")) return value;
+  let url: URL;
   try {
-    const url = new URL(value);
-    if (!url.password) return value;
-    url.username = "";
-    url.password = "";
-    return url.href;
+    url = new URL(value);
   } catch {
-    // Not a WHATWG URL (scp-style git@host:path has no password); still drop any scheme://user:pass@ prefix.
-    return value.replace(/^([a-z][a-z0-9+.-]*:\/\/)[^/@\s]*:[^/@\s]*@/i, "$1");
+    // Not a WHATWG URL (whitespace, scp-style git@host:path): still drop a leading scheme://userinfo@.
+    return value.replace(/^([a-z][a-z0-9+.-]*:\/\/)([^/@\s]+)@/i, (match, scheme: string, userinfo: string) =>
+      SSH_SCHEME.test(scheme.slice(0, -2)) ? `${scheme}${userinfo.split(":")[0]}@` : scheme,
+    );
   }
+  if (!url.host) return value;
+  const ssh = SSH_SCHEME.test(url.protocol);
+  if (!url.password && (!url.username || ssh)) return value;
+  url.password = "";
+  if (!ssh) url.username = "";
+  return url.href;
+}
+
+/** Applies stripCredentials to every string in a response, at any depth. */
+export function sanitizeUrls(value: unknown): unknown {
+  if (typeof value === "string") return stripCredentials(value);
+  if (Array.isArray(value)) return value.map(sanitizeUrls);
+  if (isRecord(value)) return Object.fromEntries(Object.entries(value).map(([key, v]) => [key, sanitizeUrls(v)]));
+  return value;
 }
 
 /** Drops server bookkeeping that only costs tokens: managedFields and the last-applied annotation. */
@@ -63,11 +80,7 @@ function trimList(data: unknown): unknown {
 
 function sources(spec: Obj): Obj[] {
   const list = Array.isArray(spec.sources) ? spec.sources : spec.source ? [spec.source] : [];
-  return list.map((s) => {
-    const source = pick(s, ["repoURL", "path", "chart", "targetRevision", "ref"]);
-    if (source.repoURL !== undefined) source.repoURL = stripCredentials(source.repoURL);
-    return source;
-  });
+  return list.map((s) => pick(s, ["repoURL", "path", "chart", "targetRevision", "ref"]));
 }
 
 /** One line of the application list: where it deploys from and to, and its sync, health, and last operation. */
@@ -177,18 +190,13 @@ const CLUSTER_FIELDS = ["name", "server", "project", "namespaces", "clusterResou
 
 /** Repository connections without credentials: an allowlist, so passwords, keys, and tokens never pass even if the API sent them. */
 export function summarizeRepositories(data: unknown): Obj[] {
-  return items(data).map((r) => {
-    const repo = pick(r, REPOSITORY_FIELDS);
-    for (const key of ["repo", "proxy"]) if (repo[key] !== undefined) repo[key] = stripCredentials(repo[key]);
-    return repo;
-  });
+  return items(data).map((r) => pick(r, REPOSITORY_FIELDS));
 }
 
 /** Clusters without their connection config (bearer tokens, TLS keys, exec credentials): an allowlist. */
 export function summarizeClusters(data: unknown): Obj[] {
   return items(data).map((c) => {
     const cluster = pick(c, CLUSTER_FIELDS);
-    if (cluster.server !== undefined) cluster.server = stripCredentials(cluster.server);
     // `info.apiVersions` lists every served API version (about 10 KB per cluster); keep the status fields.
     if (cluster.info !== undefined) cluster.info = pick(cluster.info, ["connectionState", "serverVersion", "cacheInfo", "applicationsCount"]);
     return cluster;
@@ -238,7 +246,13 @@ const MAX_LOG_LINES = 1000;
 export function registerReadTools(server: McpServer, argocd: ArgoCdClient): void {
   // Every tool is a GET; none starts a sync, a refresh, or anything else that changes Argo CD or the cluster.
   const tools = new ToolRegistrar(server, argocd);
-  const get = tools.read.bind(tools);
+  // Every JSON response passes through sanitizeUrls after its own transform, so credentials embedded in a URL
+  // never leave, whichever field (source, history, ApplicationSet template, manifest) carries it.
+  const get: typeof tools.read = (name, description, inputSchema, request) =>
+    tools.read(name, description, inputSchema, (args) => {
+      const { transform, ...rest } = request(args);
+      return { ...rest, transform: (data) => sanitizeUrls(transform ? transform(data) : data) };
+    });
 
   get("argocd_get_version", "Argo CD server version and build details.", {}, () => ({ path: "/api/version" }));
 

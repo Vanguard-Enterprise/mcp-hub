@@ -251,7 +251,7 @@ server's `/swagger.json`.
 | `argocd_list_applicationsets`, `argocd_get_applicationset` | `/api/v1/applicationsets[/{name}]` | |
 | `argocd_list_projects`, `argocd_get_project` | `/api/v1/projects[/{name}]` | |
 | `argocd_list_clusters` | `/api/v1/clusters` | Allowlisted fields; the connection `config` is never returned. |
-| `argocd_list_repositories` | `/api/v1/repositories` | Allowlisted fields; passwords, keys, and tokens are never returned, and credentials embedded in the repository or proxy URL are removed. |
+| `argocd_list_repositories` | `/api/v1/repositories` | Allowlisted fields; passwords, keys, and tokens are never returned. |
 
 Every application-scoped tool takes an optional `app_namespace` (sent as
 `appNamespace`) for Argo CD's applications-in-any-namespace feature; the
@@ -259,7 +259,11 @@ application list shows each app's namespace. No tool passes `refresh`, so
 reading never triggers a reconciliation. Argo CD
 masks Secret values in managed-resource states; the hub also replaces every
 `data` and `stringData` value of a core `Secret` in a diff with `[hidden]`, so
-a diff shows which keys differ but never their values. Pod logs are returned
+a diff shows which keys differ but never their values. Every JSON result also has
+credentials embedded in URLs removed, at any depth: `user:password@` and
+`token@` in HTTP(S) and other URLs (repository and proxy URLs, sources in
+history, ApplicationSet templates, connection strings in manifests), and the
+password of SSH URLs (the SSH user name stays). Pod logs are returned
 as the pods wrote them; anything a workload logs is visible to members of the
 section's groups.
 
