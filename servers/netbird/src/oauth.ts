@@ -82,7 +82,17 @@ export class TokenVerifier {
       };
     } catch (error) {
       if (error instanceof AuthError) throw error;
-      if (error instanceof joseErrors.JWKSTimeout) throw new AuthError(503, "temporarily_unavailable", "could not fetch the issuer's signing keys");
+      // Issuer-side failures while fetching the JWKS: a timeout, a non-200 response or
+      // unparseable JSON (both surface as the generic JOSEError), or a body that is not a
+      // key set. Token faults use dedicated subclasses (JWTExpired, JWSSignatureVerificationFailed,
+      // JWKSNoMatchingKey, ...) and stay 401.
+      if (
+        error instanceof joseErrors.JWKSTimeout ||
+        error instanceof joseErrors.JWKSInvalid ||
+        (error instanceof joseErrors.JOSEError && error.code === "ERR_JOSE_GENERIC")
+      ) {
+        throw new AuthError(503, "temporarily_unavailable", "could not fetch the issuer's signing keys");
+      }
       if (error instanceof joseErrors.JOSEError) throw new AuthError(401, "invalid_token", error.code);
       // Network failures fetching the JWKS are the only non-JOSE errors jwtVerify surfaces.
       throw new AuthError(503, "temporarily_unavailable", "could not fetch the issuer's signing keys");

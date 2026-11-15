@@ -63,7 +63,7 @@ file in this directory if one exists (see `.env.example`).
 
 | Variable | Required | Default | Purpose |
 | --- | --- | --- | --- |
-| `OIDC_ISSUER` | yes | | Pocket ID issuer, e.g. `https://id.example.com`. Discovery and `iss` check. |
+| `OIDC_ISSUER` | yes | | Pocket ID issuer exactly as its discovery document advertises it (no trailing slash), e.g. `https://id.example.com`. Discovery and `iss` check. |
 | `MCP_PUBLIC_URL` | yes | | Public URL of the MCP endpoint, e.g. `https://mcp-netbird.example.com/mcp`. The RFC 8707 resource. |
 | `OAUTH_AUDIENCE` | yes | | Comma-separated accepted `aud` values. Normally only the resource URL; add the OAuth client ID only for clients that send no `resource` parameter. |
 | `OAUTH_SCOPES` | no | `openid profile email offline_access` | Scopes advertised in the resource metadata. |

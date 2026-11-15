@@ -24,7 +24,10 @@ function parseUrl(name: string, value: string): URL {
 }
 
 const netbird = new NetBirdClient(process.env.NETBIRD_API_URL?.trim() || DEFAULT_NETBIRD_API_URL, requireEnv("NETBIRD_API_TOKEN"));
-const issuer = parseUrl("OIDC_ISSUER", requireEnv("OIDC_ISSUER")).href.replace(/\/+$/, "");
+// Kept exactly as configured: OIDC requires the issuer to match the discovery
+// document and the token `iss` byte for byte (Pocket ID advertises no trailing slash).
+const issuer = requireEnv("OIDC_ISSUER");
+parseUrl("OIDC_ISSUER", issuer);
 const resourceUrl = parseUrl("MCP_PUBLIC_URL", requireEnv("MCP_PUBLIC_URL"));
 resourceUrl.pathname = resourceUrl.pathname.replace(/\/+$/, "");
 resourceUrl.search = "";

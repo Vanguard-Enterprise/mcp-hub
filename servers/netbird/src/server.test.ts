@@ -15,13 +15,15 @@ let issuer = "";
 let privateKey: CryptoKey;
 let otherPrivateKey: CryptoKey;
 let jwks: { keys: unknown[] };
+// Set to a non-200 status to simulate a JWKS outage.
+let jwksStatus = 200;
 const idp: Server = createServer((req, res) => {
   if (req.url === "/.well-known/openid-configuration") {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ issuer, jwks_uri: `${issuer}/.well-known/jwks.json` }));
   } else if (req.url === "/.well-known/jwks.json") {
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify(jwks));
+    res.writeHead(jwksStatus, { "Content-Type": "application/json" });
+    res.end(jwksStatus === 200 ? JSON.stringify(jwks) : "unavailable");
   } else {
     res.writeHead(404).end();
   }
@@ -40,20 +42,31 @@ before(async () => {
   await new Promise<void>((resolve) => idp.listen(0, "127.0.0.1", resolve));
   issuer = `http://127.0.0.1:${(idp.address() as AddressInfo).port}`;
 
-  verifier = new TokenVerifier({
-    issuer,
-    audiences: [RESOURCE.href, CLIENT_ID],
-    resourceUrl: RESOURCE,
-    scopesSupported: ["openid", "profile", "email", "offline_access"],
-  });
-  server = createHttpServer({ verifier, netbird: new NetBirdClient("http://127.0.0.1:9", "unused") });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  verifier = newVerifier();
+  await verifier.init();
+  server = createHttpServer({ verifier, netbird: NETBIRD });
+  base = await listen(server);
 });
 after(() => {
   server.close();
   idp.close();
 });
+
+const NETBIRD = new NetBirdClient("http://127.0.0.1:9", "unused");
+
+function newVerifier(): TokenVerifier {
+  return new TokenVerifier({
+    issuer,
+    audiences: [RESOURCE.href, CLIENT_ID],
+    resourceUrl: RESOURCE,
+    scopesSupported: ["openid", "profile", "email", "offline_access"],
+  });
+}
+
+async function listen(httpServer: Server): Promise<string> {
+  await new Promise<void>((resolve) => httpServer.listen(0, "127.0.0.1", resolve));
+  return `http://127.0.0.1:${(httpServer.address() as AddressInfo).port}`;
+}
 
 async function mint(
   overrides: { aud?: string | string[]; iss?: string; exp?: string; key?: CryptoKey; sub?: string; typ?: string | null } = {},
@@ -70,8 +83,8 @@ async function mint(
   return jwt.sign(overrides.key ?? privateKey);
 }
 
-function rpc(method: string, params: unknown, authorization?: string): Promise<Response> {
-  return fetch(`${base}/mcp`, {
+function rpc(method: string, params: unknown, authorization?: string, origin = base): Promise<Response> {
+  return fetch(`${origin}/mcp`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -83,11 +96,40 @@ function rpc(method: string, params: unknown, authorization?: string): Promise<R
 }
 
 test("healthz is public, readyz waits for OIDC discovery", async () => {
-  assert.equal((await fetch(`${base}/healthz`)).status, 200);
-  assert.equal((await fetch(`${base}/readyz`)).status, 503);
-  assert.equal((await rpc("tools/list", {}, `Bearer ${await mint()}`)).status, 503);
-  await verifier.init();
-  assert.equal((await fetch(`${base}/readyz`)).status, 200);
+  // Own verifier and server so this test does not depend on, or affect, the shared ready one.
+  const cold = newVerifier();
+  const coldServer = createHttpServer({ verifier: cold, netbird: NETBIRD });
+  const coldBase = await listen(coldServer);
+  try {
+    assert.equal((await fetch(`${coldBase}/healthz`)).status, 200);
+    assert.equal((await fetch(`${coldBase}/readyz`)).status, 503);
+    const early = await rpc("tools/list", {}, `Bearer ${await mint()}`, coldBase);
+    assert.equal(early.status, 503);
+    assert.equal(early.headers.get("retry-after"), "5");
+    await cold.init();
+    assert.equal((await fetch(`${coldBase}/readyz`)).status, 200);
+    assert.equal((await rpc("tools/list", {}, `Bearer ${await mint()}`, coldBase)).status, 200);
+  } finally {
+    coldServer.close();
+  }
+});
+
+test("a JWKS outage is reported as 503, not as an invalid token", async () => {
+  // Fresh verifier so the JWKS has not been cached yet; discovery itself still works.
+  const fresh = newVerifier();
+  await fresh.init();
+  const freshServer = createHttpServer({ verifier: fresh, netbird: NETBIRD });
+  const freshBase = await listen(freshServer);
+  jwksStatus = 503;
+  try {
+    const res = await rpc("tools/list", {}, `Bearer ${await mint()}`, freshBase);
+    assert.equal(res.status, 503);
+    assert.equal(res.headers.get("retry-after"), "5");
+    assert.equal(res.headers.get("www-authenticate"), null);
+  } finally {
+    jwksStatus = 200;
+    freshServer.close();
+  }
 });
 
 test("protected resource metadata is served at both well-known forms", async () => {
