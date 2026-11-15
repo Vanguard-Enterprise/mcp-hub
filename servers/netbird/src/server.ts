@@ -64,7 +64,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, config: ServerC
     res.setHeader("Retry-After", "5");
     return respond(res, 503, { error: error.code, error_description: error.message });
   }
-  log.push(`sub=${verified.subject}`, `aud=${verified.audience.join(",")}`, `typ=${verified.typ ?? "-"}`);
+  log.push(`sub=${verified.subject}`, `aud=${verified.audience.join(",")}`, `typ=${verified.typ}`);
 
   // Stateless mode: a fresh MCP server and transport per request, no sessions to track.
   const mcp = new McpServer(SERVER_INFO, { instructions: INSTRUCTIONS });

@@ -3,7 +3,7 @@ import { createRemoteJWKSet, errors as joseErrors, jwtVerify, type JWTVerifyGetK
 export interface AuthConfig {
   /** OIDC issuer (Pocket ID), e.g. https://id.example.com. Used for discovery and the `iss` check. */
   issuer: string;
-  /** Accepted `aud` values: the MCP resource URL and/or the OAuth client ID. */
+  /** Accepted `aud` values. Normally only the MCP resource URL (tokens requested with RFC 8707 `resource`). */
   audiences: string[];
   /** Canonical public URL of the MCP endpoint, used as the RFC 8707 resource identifier. */
   resourceUrl: URL;
@@ -15,8 +15,8 @@ export interface VerifiedToken {
   subject: string;
   audience: string[];
   scopes: string[];
-  /** The JWT `typ` header, if present (RFC 9068 access tokens use `at+jwt`). */
-  typ?: string;
+  /** The JWT `typ` header (`at+jwt` or `application/at+jwt`). */
+  typ: string;
 }
 
 /** Thrown when a bearer token is missing or invalid (HTTP 401) or cannot be checked right now (HTTP 503). */
@@ -33,6 +33,9 @@ export class AuthError extends Error {
 
 // Asymmetric algorithms only: a JWKS never carries shared secrets, so HS* must never be accepted.
 const ALLOWED_ALGORITHMS = ["RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512", "EdDSA"];
+// RFC 9068 section 4: a resource server accepts only JWTs typed as access tokens. This is what
+// keeps ID tokens (typ "JWT") or any other JWT the issuer signs from being replayed as bearer tokens.
+const ACCESS_TOKEN_TYPES = new Set(["at+jwt", "application/at+jwt"]);
 
 /** Validates Pocket ID access tokens against the issuer's JWKS, discovered via OIDC discovery. */
 export class TokenVerifier {
@@ -67,12 +70,15 @@ export class TokenVerifier {
         audience: this.config.audiences,
         algorithms: ALLOWED_ALGORITHMS,
       });
+      if (!ACCESS_TOKEN_TYPES.has(protectedHeader.typ ?? "")) {
+        throw new AuthError(401, "invalid_token", "token is not an RFC 9068 access token (typ header)");
+      }
       if (typeof payload.sub !== "string" || payload.sub.length === 0) throw new AuthError(401, "invalid_token", "token has no subject");
       return {
         subject: payload.sub,
         audience: Array.isArray(payload.aud) ? payload.aud : payload.aud ? [payload.aud] : [],
         scopes: typeof payload.scope === "string" ? payload.scope.split(" ").filter(Boolean) : [],
-        typ: protectedHeader.typ,
+        typ: protectedHeader.typ as string,
       };
     } catch (error) {
       if (error instanceof AuthError) throw error;

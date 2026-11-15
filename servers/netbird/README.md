@@ -46,9 +46,10 @@ as tool errors with the status and body, not as protocol errors.
 3. The client logs the user in at Pocket ID (authorization code + PKCE, public
    client, no secret) and sends the access token as `Authorization: Bearer`.
 4. The server verifies the JWT with the issuer's JWKS (found via OIDC discovery):
-   signature (asymmetric algorithms only), `iss`, `exp`, and `aud`. The audience
-   must be the MCP resource URL (tokens requested with the RFC 8707 `resource`
-   parameter) or the OAuth client ID (plain login tokens).
+   signature (asymmetric algorithms only), `iss`, `exp`, `aud`, and the RFC 9068
+   `typ` header (`at+jwt`), which rejects ID tokens and any other JWT the issuer
+   signs. The audience must be one of `OAUTH_AUDIENCE`, normally only the MCP
+   resource URL that clients request with the RFC 8707 `resource` parameter.
 
 Pocket ID needs two objects: a public OIDC client with PKCE and the callback URL
 `http://localhost/callback` (registered without a port, so any loopback port
@@ -64,7 +65,7 @@ file in this directory if one exists (see `.env.example`).
 | --- | --- | --- | --- |
 | `OIDC_ISSUER` | yes | | Pocket ID issuer, e.g. `https://id.example.com`. Discovery and `iss` check. |
 | `MCP_PUBLIC_URL` | yes | | Public URL of the MCP endpoint, e.g. `https://mcp-netbird.example.com/mcp`. The RFC 8707 resource. |
-| `OAUTH_AUDIENCE` | yes | | Comma-separated accepted `aud` values: the resource URL and/or the OAuth client ID. |
+| `OAUTH_AUDIENCE` | yes | | Comma-separated accepted `aud` values. Normally only the resource URL; add the OAuth client ID only for clients that send no `resource` parameter. |
 | `OAUTH_SCOPES` | no | `openid profile email offline_access` | Scopes advertised in the resource metadata. |
 | `NETBIRD_API_TOKEN` | yes | | NetBird Personal Access Token. Sent to NetBird as `Authorization: Token <PAT>`. |
 | `NETBIRD_API_URL` | no | `https://api.netbird.io` | Base URL of a self-hosted NetBird management server. |

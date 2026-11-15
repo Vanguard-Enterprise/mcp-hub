@@ -55,9 +55,13 @@ after(() => {
   idp.close();
 });
 
-async function mint(overrides: { aud?: string | string[]; iss?: string; exp?: string; key?: CryptoKey; sub?: string } = {}): Promise<string> {
+async function mint(
+  overrides: { aud?: string | string[]; iss?: string; exp?: string; key?: CryptoKey; sub?: string; typ?: string | null } = {},
+): Promise<string> {
+  const header: Record<string, string> = { alg: "RS256", kid: "k1" };
+  if (overrides.typ !== null) header.typ = overrides.typ ?? "at+jwt";
   const jwt = new SignJWT({ scope: "openid profile email" })
-    .setProtectedHeader({ alg: "RS256", kid: "k1", typ: "at+jwt" })
+    .setProtectedHeader(header as { alg: string })
     .setIssuer(overrides.iss ?? issuer)
     .setAudience(overrides.aud ?? [RESOURCE.href, issuer])
     .setIssuedAt()
@@ -117,6 +121,10 @@ test("/mcp rejects tokens that fail verification", async () => {
     "wrong audience": `Bearer ${await mint({ aud: "https://other.example.com/mcp" })}`,
     expired: `Bearer ${await mint({ exp: "-1m" })}`,
     "no subject": `Bearer ${await mint({ sub: "" })}`,
+    // An ID token for the same client: right issuer, key, and audience, but typ JWT.
+    "ID token (typ JWT)": `Bearer ${await mint({ typ: "JWT", aud: CLIENT_ID })}`,
+    "no typ header": `Bearer ${await mint({ typ: null })}`,
+    "other typ": `Bearer ${await mint({ typ: "logout+jwt" })}`,
   };
   for (const [name, authorization] of Object.entries(cases)) {
     const res = await rpc("tools/list", {}, authorization);
@@ -134,6 +142,11 @@ test("/mcp accepts tokens for the resource audience or the client audience and s
     assert.equal(body.result.tools.length, 17);
     assert.ok(body.result.tools.every((t) => t.annotations?.readOnlyHint === true));
   }
+});
+
+test("/mcp accepts the application/at+jwt media type form", async () => {
+  const res = await rpc("tools/list", {}, `Bearer ${await mint({ typ: "application/at+jwt" })}`);
+  assert.equal(res.status, 200);
 });
 
 test("tool calls report NetBird connection problems as tool errors", async () => {
