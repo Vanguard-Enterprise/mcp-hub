@@ -29,7 +29,8 @@ The access policy is a JSON file (`ACCESS_POLICY_FILE`):
   seconds, so removing someone from a group takes effect within a minute.
 - `hub_whoami` is always available and shows the caller's groups and access
   per section.
-- The policy may only name loaded modules; a typo fails at startup.
+- The policy may only name loaded modules; a typo fails at startup. Remove the
+  entry of any section you do not enable (the example lists every section).
 
 ### Adding a section
 
@@ -268,7 +269,10 @@ file in this directory if one exists (see `.env.example`).
 | `HOST` | no | `0.0.0.0` | Listen address. |
 | `PORT` | no | `8080` | Listen port. |
 
-Tokens are never logged. The access log contains method, path, status, and for
+Backend URLs (`NETBIRD_API_URL`, `POCKETID_URL`) must be HTTPS, or plain HTTP
+on loopback for local development, and must be the final URL: the hub sends
+credentials with every request, so it never follows redirects and reports a
+3xx as an error. Tokens are never logged. The access log contains method, path, status, and for
 authenticated calls the token subject and the resolved access per section.
 
 ## Endpoints
@@ -288,7 +292,7 @@ cd hub
 pnpm install
 pnpm build
 cp .env.example .env                               # fill in the values
-cp access-policy.example.json access-policy.json   # adjust the groups
+cp access-policy.example.json access-policy.json   # adjust the groups; drop sections you do not enable
 pnpm start                                         # http://0.0.0.0:8080/mcp
 ```
 

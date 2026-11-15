@@ -94,17 +94,24 @@ export class ToolRegistrar {
   ): void {
     const callback = async (args: Args<Shape>): Promise<CallToolResult> => {
       let target = "-";
-      const result = await apiResult(async () => {
-        const { method, path, body, transform } = await request(args, this.client);
-        target = `${method} ${path}`;
-        const data = await this.client.request(method, path, body);
-        // Deletes answer with an empty body or "{}"; report what happened instead.
-        if (isEmpty(data)) return { status: "ok", method, path };
-        return transform ? transform(data) : data;
-      });
-      // Audit line: who changed what. Never the body.
-      console.log(`${new Date().toISOString()} write ${name} ${target} sub=${this.subject ?? "-"} ${result.isError ? "error" : "ok"}`);
-      return result;
+      // "error" also covers failures after the request was sent (a timeout or reset while reading the
+      // answer), where the backend may still have applied the change.
+      let outcome = "error";
+      try {
+        const result = await apiResult(async () => {
+          const { method, path, body, transform } = await request(args, this.client);
+          target = `${method} ${path}`;
+          const data = await this.client.request(method, path, body);
+          // Deletes answer with an empty body or "{}"; report what happened instead.
+          if (isEmpty(data)) return { status: "ok", method, path };
+          return transform ? transform(data) : data;
+        });
+        if (!result.isError) outcome = "ok";
+        return result;
+      } finally {
+        // Audit line: who changed what, written even when the call throws. Never the body.
+        console.log(`${new Date().toISOString()} write ${name} ${target} sub=${this.subject ?? "-"} ${outcome}`);
+      }
     };
     this.server.registerTool(
       name,

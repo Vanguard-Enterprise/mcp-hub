@@ -56,6 +56,10 @@ const fake: Server = createServer((req, res) => {
       return send(200, { data: [{ id: "t1", token: "invite-secret", usageLimit: 1 }], pagination: { totalItems: 1 } });
     }
     if (req.method === "GET" && path.endsWith("/scim-service-provider")) return send(200, { id: "s1", endpoint: "https://scim.example.com", token: "scim-secret" });
+    // Like Pocket ID, answer SCIM provider writes with the provider, bearer token included.
+    if ((req.method === "POST" || req.method === "PUT") && /^\/api\/scim\/service-provider(\/[^/]+)?$/.test(path)) {
+      return send(200, { id: "s1", ...(JSON.parse(body) as object) });
+    }
     if (req.method === "DELETE") return send(204);
     send(200, { id: "new-id", echo: body ? JSON.parse(body) : null });
   });
@@ -287,6 +291,28 @@ test("update_app_config merges the changes into the current configuration, crede
   // The real SMTP password is sent back unchanged, not the placeholder the read tool shows.
   assert.deepEqual(JSON.parse(put?.body ?? ""), { appName: "Pocket ID", allowUserSignups: "withToken", smtpPassword: "smtp-secret", ldapBindPassword: "" });
   assert.doesNotMatch(text(result), /smtp-secret/, "the tool result does not echo the configuration's credentials");
+});
+
+test("SCIM provider writes do not return the bearer token", async () => {
+  for (const [name, args] of [
+    ["pocketid_create_scim_provider", { endpoint: "https://scim.example.com", token: "new-secret", oidcClientId: "c1" }],
+    ["pocketid_update_scim_provider", { provider_id: "s1", endpoint: "https://scim.example.com", oidcClientId: "c1" }],
+  ] as const) {
+    const result = await call(name, args);
+    assert.notEqual(result.isError, true, text(result));
+    assert.match(last().body, /secret/, `${name} sends the real token to Pocket ID`);
+    assert.doesNotMatch(text(result), /secret/, name);
+    assert.equal((JSON.parse(text(result)) as { token: string }).token, HIDDEN, name);
+  }
+});
+
+test("fetched objects with null fields can be sent back unchanged", async () => {
+  const user = { user_id: "u1", username: "bob", email: null, locale: null, lastName: null, emailVerified: false, isAdmin: false, disabled: false };
+  assert.notEqual((await call("pocketid_update_user", user)).isError, true);
+  assert.equal((JSON.parse(last().body) as { locale: unknown }).locale, null);
+  const client = { client_id: "c1", ...CLIENT, launchURL: null, logoutCallbackURLs: null, callbackURLs: null };
+  assert.notEqual((await call("pocketid_update_oidc_client", client)).isError, true);
+  assert.equal((JSON.parse(last().body) as { launchURL: unknown }).launchURL, null);
 });
 
 test("a SCIM provider update without a new token keeps the current one", async () => {

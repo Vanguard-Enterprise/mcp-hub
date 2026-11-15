@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { createRemoteJWKSet, errors as joseErrors, jwtVerify, type JWTVerifyGetKey } from "jose";
+import { isLoopback } from "./url.js";
 
 export interface AuthConfig {
   /** OIDC issuer (Pocket ID), e.g. https://id.example.com. Used for discovery and the `iss` check. */
@@ -163,10 +164,6 @@ export class TokenVerifier {
       throw new AuthError(503, "temporarily_unavailable", "could not fetch the issuer's signing keys");
     }
   }
-}
-
-function isLoopback(url: URL): boolean {
-  return url.hostname === "localhost" || url.hostname === "[::1]" || /^127\.\d+\.\d+\.\d+$/.test(url.hostname);
 }
 
 /** RFC 9728 protected resource metadata document. */

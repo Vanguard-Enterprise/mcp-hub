@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { JsonApiClient } from "../http.js";
 import { ACTION, CREATE, DELETE, id, seg, ToolInputError, ToolRegistrar, UPDATE } from "../tools.js";
 import type { PocketIdClient } from "./client.js";
-import { HIDDEN, redactAppConfig, SECRET_CONFIG_KEYS } from "./read.js";
+import { HIDDEN, redactAppConfig, redactToken, SECRET_CONFIG_KEYS } from "./read.js";
 
 const REPLACES =
   "Replaces the whole object: fetch it first with the matching pocketid_get_* tool and send every field back with your changes; " +
@@ -21,13 +21,14 @@ const timestamp = z.iso.datetime({ offset: true });
 
 const USER = {
   username: z.string().min(1).max(50).describe("Username: letters, digits, _ . - @, not starting or ending with a special character"),
-  email: z.email().optional().describe("Email address"),
+  // Nullable fields accept null because the read tools return null for unset values.
+  email: z.email().nullish().describe("Email address"),
   emailVerified: z.boolean().optional().describe("Whether the email address counts as verified"),
   firstName: z.string().max(50).optional(),
-  lastName: z.string().max(50).optional(),
+  lastName: z.string().max(50).nullish(),
   displayName: z.string().max(100).optional(),
   isAdmin: z.boolean().optional().describe("Pocket ID administrator: full control of the identity provider"),
-  locale: z.string().optional().describe("UI locale, e.g. en-US"),
+  locale: z.string().nullish().describe("UI locale, e.g. en-US"),
   disabled: z.boolean().optional().describe("Disabled users cannot sign in"),
 };
 
@@ -65,8 +66,8 @@ const FEDERATED_IDENTITY = z.object({
 const CLIENT = {
   name: z.string().min(1).max(50).describe("Client name shown to users"),
   description: z.string().max(150).optional(),
-  callbackURLs: z.array(z.string().min(1)).optional().describe("Allowed redirect URIs; * wildcards are allowed"),
-  logoutCallbackURLs: z.array(z.string().min(1)).optional().describe("Allowed post-logout redirect URIs"),
+  callbackURLs: z.array(z.string().min(1)).nullish().describe("Allowed redirect URIs; * wildcards are allowed"),
+  logoutCallbackURLs: z.array(z.string().min(1)).nullish().describe("Allowed post-logout redirect URIs"),
   backchannelLogoutURL: z.string().optional().describe("Back-channel logout endpoint of the client"),
   isPublic: z.boolean().describe("Public client (no secret, e.g. a native or browser app); public clients must use PKCE"),
   pkceEnabled: z.boolean().describe("Require PKCE"),
@@ -77,7 +78,7 @@ const CLIENT = {
     .object({ federatedIdentities: z.array(FEDERATED_IDENTITY).optional() })
     .optional()
     .describe("Federated client credentials (JWT assertions from another issuer). Secrets are managed with the secret tools"),
-  launchURL: z.url().optional().describe("URL that the user's app list opens"),
+  launchURL: z.url().nullish().describe("URL that the user's app list opens"),
   logoUrl: z.url().optional().describe("Download the light logo from this URL (the server's egress policy may block the host)"),
   darkLogoUrl: z.url().optional().describe("Download the dark logo from this URL"),
   isGroupRestricted: z.boolean().optional().describe("Only members of the allowed groups may sign in (set them with pocketid_set_oidc_client_allowed_groups)"),
@@ -333,10 +334,12 @@ export function registerWriteTools(server: McpServer, pocketid: PocketIdClient, 
   }));
 
   // SCIM provisioning
+  // Pocket ID answers SCIM writes with the provider, bearer token included: hide it like the read tool does.
   write("pocketid_create_scim_provider", "Provision an OIDC client's users and groups to a SCIM service provider.", CREATE, SCIM_PROVIDER, (b) => ({
     method: "POST",
     path: "/api/scim/service-provider",
     body: b,
+    transform: redactToken,
   }));
   write(
     "pocketid_update_scim_provider",
@@ -349,6 +352,7 @@ export function registerWriteTools(server: McpServer, pocketid: PocketIdClient, 
       method: "PUT",
       path: `/api/scim/service-provider/${seg(provider_id)}`,
       body: { ...b, token: await scimTokenToSave(client, provider_id, b.oidcClientId, token) },
+      transform: redactToken,
     }),
   );
   write("pocketid_delete_scim_provider", "Delete a SCIM service provider; Pocket ID stops provisioning to it.", DELETE, { provider_id: id("SCIM service provider") }, ({ provider_id }) => ({
