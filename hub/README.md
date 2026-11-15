@@ -16,7 +16,8 @@ The access policy is a JSON file (`ACCESS_POLICY_FILE`):
 {
   "sections": {
     "netbird": { "read": ["mcp_netbird_read"], "write": ["mcp_netbird_write"] },
-    "pocketid": { "read": ["mcp_pocketid_read"], "write": ["mcp_pocketid_write"] }
+    "pocketid": { "read": ["mcp_pocketid_read"], "write": ["mcp_pocketid_write"] },
+    "argocd": { "read": ["mcp_argocd_read"] }
   }
 }
 ```
@@ -225,6 +226,68 @@ It acts with that user's full admin rights and must have an expiry date;
 Pocket ID can email a reminder before it expires (`emailApiKeyExpirationEnabled`).
 After renewing or replacing it, update the hub's secret and restart the pods.
 
+## Argo CD section
+
+Reads the [Argo CD](https://argo-cd.readthedocs.io) API server with a local
+account's API token (`Authorization: Bearer`). The section is read-only: it
+registers the same read tools at either access level and has no write tools,
+so syncs, refreshes, rollbacks, and edits stay in Git and in Argo CD itself.
+Give the account Argo CD's built-in `role:readonly`; the hub then cannot change
+anything even if a tool were added by mistake. Endpoints follow the API
+server's `/swagger.json`.
+
+| Tool | Endpoint | Notes |
+| --- | --- | --- |
+| `argocd_get_version` | `/api/version` | |
+| `argocd_list_applications` | `/api/v1/applications` | One summary per app: sources, destination, sync, health, last operation, conditions, auto-sync, images. `problems_only` keeps apps that are not `Synced` and `Healthy`, whose last sync failed, or that report conditions. Filters: `project`, `selector`, `repo`. |
+| `argocd_get_application` | `/api/v1/applications/{name}` | The full application, without `managedFields`. |
+| `argocd_get_resource_tree` | `/api/v1/applications/{name}/resource-tree` | Compact nodes (kind, name, version, UID, parents, health, info, images); `unhealthy_only`. |
+| `argocd_get_application_diff` | `/api/v1/applications/{name}/managed-resources` | Out-of-sync resources with `target` and `live` state parsed from JSON, the same pair as the Argo CD UI diff (predicted state after a sync against the normalized live state); filters `kind`, `resource_name`, `namespace`; `include_synced`. |
+| `argocd_get_resource` | `/api/v1/applications/{name}/resource` | Live manifest of one resource. Refuses core `Secret`s before calling Argo CD. |
+| `argocd_list_events` | `/api/v1/applications/{name}/events` | Events newest first, for the app or one of its resources. |
+| `argocd_get_logs` | `/api/v1/applications/{name}/logs` | `follow=false`, `tail_lines` 100 by default and at most 1000 per pod; `pod_name`, or `kind` and `resource_name` for all pods of a parent. Returns `timestamp pod line` strings. |
+| `argocd_get_revision_metadata` | `/api/v1/applications/{name}/revisions/{revision}/metadata` | Commit author, date, message, and tags. |
+| `argocd_get_sync_windows` | `/api/v1/applications/{name}/syncwindows` | |
+| `argocd_list_applicationsets`, `argocd_get_applicationset` | `/api/v1/applicationsets[/{name}]` | |
+| `argocd_list_projects`, `argocd_get_project` | `/api/v1/projects[/{name}]` | |
+| `argocd_list_clusters` | `/api/v1/clusters` | Allowlisted fields; the connection `config` is never returned. |
+| `argocd_list_repositories` | `/api/v1/repositories` | Allowlisted fields; passwords, keys, and tokens are never returned. |
+
+Every application-scoped tool takes an optional `app_namespace` (sent as
+`appNamespace`) for Argo CD's applications-in-any-namespace feature, and the
+ApplicationSet tools an optional `appset_namespace` (sent as `appsetNamespace`); the
+application list shows each app's namespace. No tool passes `refresh`, so
+reading never triggers a reconciliation. Argo CD
+masks Secret values in managed-resource states; the hub also replaces every
+`data` and `stringData` value of a core `Secret` in a diff with `[hidden]`, so
+a diff shows which keys differ but never their values. Every JSON result also has
+credentials embedded in URLs removed, at any depth: `user:password@` and
+`token@` in HTTP(S) and other URLs (repository and proxy URLs, sources in
+history, ApplicationSet templates, connection strings in manifests), and the
+password of SSH URLs (the SSH user name stays). Pod logs are returned
+as the pods wrote them; anything a workload logs is visible to members of the
+section's groups.
+
+### API token
+
+Declare a local account with only the `apiKey` capability and bind it to
+`role:readonly`, for example in the Argo CD Helm values:
+
+```yaml
+configs:
+  cm:
+    accounts.mcp-hub: apiKey
+  rbac:
+    policy.csv: |
+      g, mcp-hub, role:readonly
+```
+
+Then generate its token, for example with `argocd account generate-token
+--account mcp-hub` (or `argocd --core account generate-token --account mcp-hub`,
+which uses your kubeconfig instead of an Argo CD login). The token does not
+expire unless you pass `--expires-in`; revoke it with `argocd account
+delete-token`.
+
 ## How authentication works
 
 1. A request to `POST /mcp` without a valid token gets `401` with
@@ -266,10 +329,12 @@ file in this directory if one exists (see `.env.example`).
 | `NETBIRD_API_URL` | no | `https://api.netbird.io` | Base URL of a self-hosted NetBird management server. |
 | `POCKETID_API_KEY` | for pocketid | | Pocket ID admin API key; setting it enables the pocketid section. Sent as `X-API-Key`. |
 | `POCKETID_URL` | no | `OIDC_ISSUER` | Base URL of the Pocket ID instance to administer, when it is not the hub's own issuer. |
+| `ARGOCD_API_TOKEN` | for argocd | | API token of a read-only Argo CD local account; setting it enables the argocd section. Sent as `Authorization: Bearer`. |
+| `ARGOCD_URL` | for argocd | | Base URL of the Argo CD API server, e.g. `https://argocd.example.com`. |
 | `HOST` | no | `0.0.0.0` | Listen address. |
 | `PORT` | no | `8080` | Listen port. |
 
-Backend URLs (`NETBIRD_API_URL`, `POCKETID_URL`) must be HTTPS, or plain HTTP
+Backend URLs (`NETBIRD_API_URL`, `POCKETID_URL`, `ARGOCD_URL`) must be HTTPS, or plain HTTP
 on loopback for local development, and must be the final URL: the hub sends
 credentials with every request, so it never follows redirects and reports a
 3xx as an error. Tokens are never logged. The access log contains method, path, status, and for
