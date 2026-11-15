@@ -70,6 +70,8 @@ test("read tools are read-only, write tools are not, and deletes are destructive
   for (const tool of tools) {
     const isWrite = /^netbird_(create|update|delete)_/.test(tool.name);
     assert.equal(tool.annotations?.readOnlyHint, !isWrite, tool.name);
+    // Write tools must force a client prompt on every call; read tools must not.
+    assert.equal((tool._meta as Record<string, unknown> | undefined)?.["anthropic/requiresUserInteraction"], isWrite ? true : undefined, tool.name);
     if (/^netbird_(delete|update)_/.test(tool.name)) {
       assert.equal(tool.annotations?.destructiveHint, true, tool.name);
       assert.equal(tool.annotations?.idempotentHint, true, tool.name);
