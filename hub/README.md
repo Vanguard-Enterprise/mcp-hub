@@ -15,7 +15,8 @@ The access policy is a JSON file (`ACCESS_POLICY_FILE`):
 ```json
 {
   "sections": {
-    "netbird": { "read": ["mcp_netbird_read"], "write": ["mcp_netbird_write"] }
+    "netbird": { "read": ["mcp_netbird_read"], "write": ["mcp_netbird_write"] },
+    "pocketid": { "read": ["mcp_pocketid_read"], "write": ["mcp_pocketid_write"] }
   }
 }
 ```
@@ -28,12 +29,16 @@ The access policy is a JSON file (`ACCESS_POLICY_FILE`):
   seconds, so removing someone from a group takes effect within a minute.
 - `hub_whoami` is always available and shows the caller's groups and access
   per section.
-- The policy may only name loaded modules; a typo fails at startup.
+- The policy may only name loaded modules; a typo fails at startup. Remove the
+  entry of any section you do not enable (the example lists every section).
 
 ### Adding a section
 
 1. Add `src/modules/<name>/` exporting a `HubModule` (name, instructions, and
-   `register(server, level, ctx)`), with tool names prefixed `<name>_`.
+   `register(server, level, ctx)`), with tool names prefixed `<name>_`. A
+   `JsonApiClient` (`src/modules/http.ts`) talks to a REST backend, and a
+   `ToolRegistrar` (`src/modules/tools.ts`) registers read tools and audited
+   write tools that carry the prompt flag described under the NetBird section.
 2. Enable it from its own environment variables in `src/index.ts`.
 3. Add `<name>` with its read and write groups to the access policy, and create
    those groups in Pocket ID.
@@ -122,6 +127,104 @@ logged with the tool name, method, path, and the caller's OAuth subject, never
 the body. NetBird errors (4xx/5xx) come back as tool errors with the status and
 body, not as protocol errors.
 
+## Pocket ID section
+
+Administers the [Pocket ID](https://pocket-id.org) instance through its admin
+API with an admin user's API key (`X-API-Key`). Endpoints and fields follow
+Pocket ID v2.19 (`pocket-id/pocket-id`, `backend/internal`). Request bodies use
+the API's own camelCase field names, so what a `get` tool returns can be sent
+back to the matching `update` tool; path parameters are snake_case arguments.
+
+Pocket ID is also the hub's login. Group memberships decide which sections and
+write tools each user gets, so the write half of this section can grant
+access to everything behind the hub, its own write tools included. Keep
+`mcp_pocketid_write` as small as Pocket ID's admin list.
+
+### Read tools
+
+Read-only, one `GET` each. List tools take `search`, `page`, `limit` (at most
+100), `sort_column`, and `sort_direction`, and return `{data, pagination}`.
+Read tools never return credentials: SMTP and LDAP passwords, SCIM bearer
+tokens, and sign-up token values come back as `[hidden]`, and client secrets
+are only ever listed by prefix.
+
+| Tool | Endpoint | Arguments |
+| --- | --- | --- |
+| `pocketid_list_users` | `/api/users` | list arguments, `is_admin`, `disabled` |
+| `pocketid_get_user` | `/api/users/{id}` | `user_id` |
+| `pocketid_list_groups_of_user` | `/api/users/{id}/groups` | `user_id` |
+| `pocketid_list_user_passkeys` | `/api/users/{id}/webauthn-credentials` | `user_id` |
+| `pocketid_list_user_authorized_clients` | `/api/oidc/users/{id}/authorized-clients` | `user_id`, list arguments |
+| `pocketid_list_groups` | `/api/user-groups` | list arguments |
+| `pocketid_get_group` | `/api/user-groups/{id}` | `group_id` |
+| `pocketid_list_oidc_clients` | `/api/oidc/clients` | list arguments |
+| `pocketid_get_oidc_client` | `/api/oidc/clients/{id}` | `client_id` |
+| `pocketid_list_oidc_client_secrets` | `/api/oidc/clients/{id}/secrets` | `client_id` |
+| `pocketid_preview_oidc_client_claims` | `/api/oidc/clients/{id}/preview/{userId}` | `client_id`, `user_id`, `scopes` (default `openid profile email groups`) |
+| `pocketid_list_oidc_client_apis` | `/api/api-access/{clientId}/apis` | `client_id` |
+| `pocketid_get_oidc_client_scim_provider` | `/api/oidc/clients/{id}/scim-service-provider` | `client_id` |
+| `pocketid_list_apis` | `/api/apis` | list arguments |
+| `pocketid_get_api` | `/api/apis/{id}` | `api_id` |
+| `pocketid_list_api_clients` | `/api/apis/{id}/clients` | `api_id`, list arguments |
+| `pocketid_list_signup_tokens` | `/api/signup-tokens` | list arguments except `search` |
+| `pocketid_list_audit_logs` | `/api/audit-logs/all` | `page`, `limit`, `sort_*` (default newest first), `event`, `user_id`, `client_name`, `location` |
+| `pocketid_get_app_config` | `/api/application-configuration/all` | |
+
+### Write tools
+
+Annotated and flagged like the NetBird write tools (`readOnlyHint: false`,
+`destructiveHint` on updates, sets, removals, and deletes, and
+`anthropic/requiresUserInteraction` on every one), validated against the API's
+binding rules before anything is sent, and logged with the caller's subject.
+Pocket ID's own audit log attributes every call to the API key's owner.
+
+`pocketid_update_*` tools are `PUT`s that replace the whole object, and
+`pocketid_set_*` tools replace the whole list they set: read first and send
+everything back with the change. `pocketid_update_app_config` is the
+exception: it takes only the keys to change, reads the current configuration
+(with the real credentials) itself, and saves the merged result, so a change
+to one setting cannot wipe the SMTP or LDAP password. Unknown keys are refused
+before anything is saved. Credentials sent back as the `[hidden]` placeholder
+mean "unchanged": a hidden SMTP or LDAP password is left as it is, and
+`pocketid_update_scim_provider` without a token (or with `[hidden]`) looks up
+and keeps the provider's current token.
+
+| Tool | Endpoint |
+| --- | --- |
+| `pocketid_create_user`, `pocketid_update_user`, `pocketid_delete_user` | `POST /api/users`, `PUT`/`DELETE /api/users/{id}` |
+| `pocketid_set_user_groups` | `PUT /api/users/{id}/user-groups` |
+| `pocketid_set_user_custom_claims` | `PUT /api/custom-claims/user/{id}` |
+| `pocketid_delete_user_passkey` | `DELETE /api/users/{id}/webauthn-credentials/{credentialId}` |
+| `pocketid_create_one_time_access_token`, `pocketid_send_one_time_access_email` | `POST /api/users/{id}/one-time-access-token`, `POST .../one-time-access-email` |
+| `pocketid_create_group`, `pocketid_update_group`, `pocketid_delete_group` | `POST /api/user-groups`, `PUT`/`DELETE /api/user-groups/{id}` |
+| `pocketid_set_group_users`, `pocketid_set_group_allowed_clients` | `PUT /api/user-groups/{id}/users`, `PUT .../allowed-oidc-clients` |
+| `pocketid_set_group_custom_claims` | `PUT /api/custom-claims/user-group/{id}` |
+| `pocketid_create_oidc_client`, `pocketid_update_oidc_client`, `pocketid_delete_oidc_client` | `POST /api/oidc/clients`, `PUT`/`DELETE /api/oidc/clients/{id}` |
+| `pocketid_set_oidc_client_allowed_groups` | `PUT /api/oidc/clients/{id}/allowed-user-groups` |
+| `pocketid_create_oidc_client_secret`, `pocketid_delete_oidc_client_secret` | `POST /api/oidc/clients/{id}/secrets`, `DELETE .../secrets/{secretId}` |
+| `pocketid_create_api`, `pocketid_update_api`, `pocketid_delete_api` | `POST /api/apis`, `PUT`/`DELETE /api/apis/{id}` |
+| `pocketid_set_api_permissions`, `pocketid_set_api_metadata_client_access` | `PUT /api/apis/{id}/permissions`, `PUT .../cimd-access` |
+| `pocketid_set_api_client_access`, `pocketid_remove_api_client_access` | `PUT`/`DELETE /api/apis/{id}/clients/{clientId}` |
+| `pocketid_create_signup_token`, `pocketid_delete_signup_token` | `POST /api/signup-tokens`, `DELETE /api/signup-tokens/{id}` |
+| `pocketid_create_scim_provider`, `pocketid_update_scim_provider`, `pocketid_delete_scim_provider`, `pocketid_sync_scim_provider` | `POST /api/scim/service-provider`, `PUT`/`DELETE .../{id}`, `POST .../{id}/sync` |
+| `pocketid_update_app_config` | `GET /api/application-configuration/all`, then `PUT /api/application-configuration` |
+| `pocketid_sync_ldap` | `POST /api/application-configuration/sync-ldap` |
+
+Tools that create a credential return it once, as the API does: one-time
+access tokens, sign-up tokens, client secrets, and the secret a new
+confidential client may get (`createdSecret`). Not exposed: the caller's own
+account (`/api/users/me`), API keys (Pocket ID allows creating them only from
+a browser session), logo and image uploads, the test email, client metadata
+refresh, and the device-login and sign-in flows.
+
+### API key
+
+Create the key in Pocket ID while signed in as an admin
+(`/settings/admin/api-keys`).
+It acts with that user's full admin rights and must have an expiry date;
+Pocket ID can email a reminder before it expires (`emailApiKeyExpirationEnabled`).
+After renewing or replacing it, update the hub's secret and restart the pods.
+
 ## How authentication works
 
 1. A request to `POST /mcp` without a valid token gets `401` with
@@ -161,10 +264,15 @@ file in this directory if one exists (see `.env.example`).
 | `ACCESS_POLICY_FILE` | yes | | Path to the access policy JSON (see `access-policy.example.json`). |
 | `NETBIRD_API_TOKEN` | for netbird | | NetBird Personal Access Token; setting it enables the netbird section. Sent to NetBird as `Authorization: Token <PAT>`. |
 | `NETBIRD_API_URL` | no | `https://api.netbird.io` | Base URL of a self-hosted NetBird management server. |
+| `POCKETID_API_KEY` | for pocketid | | Pocket ID admin API key; setting it enables the pocketid section. Sent as `X-API-Key`. |
+| `POCKETID_URL` | no | `OIDC_ISSUER` | Base URL of the Pocket ID instance to administer, when it is not the hub's own issuer. |
 | `HOST` | no | `0.0.0.0` | Listen address. |
 | `PORT` | no | `8080` | Listen port. |
 
-Tokens are never logged. The access log contains method, path, status, and for
+Backend URLs (`NETBIRD_API_URL`, `POCKETID_URL`) must be HTTPS, or plain HTTP
+on loopback for local development, and must be the final URL: the hub sends
+credentials with every request, so it never follows redirects and reports a
+3xx as an error. Tokens are never logged. The access log contains method, path, status, and for
 authenticated calls the token subject and the resolved access per section.
 
 ## Endpoints
@@ -184,7 +292,7 @@ cd hub
 pnpm install
 pnpm build
 cp .env.example .env                               # fill in the values
-cp access-policy.example.json access-policy.json   # adjust the groups
+cp access-policy.example.json access-policy.json   # adjust the groups; drop sections you do not enable
 pnpm start                                         # http://0.0.0.0:8080/mcp
 ```
 
@@ -228,7 +336,8 @@ The HTTP tests run a fake OIDC provider (discovery, JWKS, userinfo with
 per-user groups) and verify the 401 challenge, the metadata documents, readiness
 gating, token rejection cases (bad signature, issuer, audience, expiry), tool
 lists for write, read, and no-access callers, that a hidden tool cannot be
-called, group caching, and userinfo failures. The write-tool
+called, group caching, and userinfo failures. The section
 tests connect an in-process MCP client to the server and check, against a fake
-NetBird API, the method, path, headers, and body of each kind of call, input
-validation, and error mapping.
+NetBird or Pocket ID API, the method, path, headers, and body of every tool,
+input validation, error mapping, that Pocket ID read tools hide credentials,
+and that the configuration update merges instead of replacing.

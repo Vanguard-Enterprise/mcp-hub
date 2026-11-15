@@ -1,18 +1,7 @@
-import type { McpServer, ToolCallback } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import type { NetBirdClient, WriteMethod } from "./client.js";
-import { id, netbirdResult, seg } from "./read.js";
-
-// Creates add objects without touching existing ones; updates and deletes change or remove
-// live network configuration, so clients should confirm them with the user.
-const CREATE = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true };
-const UPDATE = { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true };
-const DELETE = { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true };
-
-// Claude Code honours this flag in every permission mode (auto, acceptEdits, bypassPermissions):
-// it prompts on each call and offers no "don't ask again". Annotations alone do not gate approval.
-const REQUIRES_USER_INTERACTION = { "anthropic/requiresUserInteraction": true };
+import { CREATE, DELETE, id, seg, ToolRegistrar, UPDATE } from "../tools.js";
+import type { NetBirdClient } from "./client.js";
 
 const REPLACES =
   "Replaces the whole object: fetch it first with the matching netbird_get_* tool and send every field back with your changes. " +
@@ -127,44 +116,14 @@ const PEER = {
   ipv6: z.string().optional().describe("NetBird IPv6 address to assign"),
 };
 
-type Annotations = typeof CREATE;
-
-function isEmpty(data: unknown): boolean {
-  return data === null || data === undefined || (typeof data === "object" && !Array.isArray(data) && Object.keys(data as object).length === 0);
-}
-
 /**
  * Registers the tools that create, update, and delete NetBird objects.
  * `subject` is the authenticated user's OAuth subject; every write is logged with it,
  * because NetBird's own activity log attributes everything to the PAT owner.
  */
 export function registerWriteTools(server: McpServer, netbird: NetBirdClient, subject?: string): void {
-  function write<Shape extends z.ZodRawShape>(
-    name: string,
-    description: string,
-    annotations: Annotations,
-    inputSchema: Shape,
-    request: (args: z.infer<z.ZodObject<Shape>>) => { method: WriteMethod; path: string; body?: unknown },
-  ): void {
-    const callback = async (args: z.infer<z.ZodObject<Shape>>): Promise<CallToolResult> => {
-      const { method, path, body } = request(args);
-      // DELETE answers with an empty object; report what happened instead of "{}".
-      const result = await netbirdResult(async () => {
-        const data = await netbird.request(method, path, body);
-        return isEmpty(data) ? { status: "ok", method, path } : data;
-      });
-      // Audit line: who changed what. Never the body.
-      console.log(`${new Date().toISOString()} write ${name} ${method} ${path} sub=${subject ?? "-"} ${result.isError ? "error" : "ok"}`);
-      return result;
-    };
-    // ToolCallback<Shape> is a conditional type that TypeScript cannot resolve
-    // for a generic Shape, so the (already validated) argument type is asserted.
-    server.registerTool(
-      name,
-      { description, inputSchema, annotations, _meta: REQUIRES_USER_INTERACTION },
-      callback as unknown as ToolCallback<Shape>,
-    );
-  }
+  const tools = new ToolRegistrar(server, netbird, subject);
+  const write = tools.write.bind(tools);
 
   // Groups
   write("netbird_create_group", "Create a group. Peers and resources are optional and can be added later.", CREATE, GROUP, (b) => ({

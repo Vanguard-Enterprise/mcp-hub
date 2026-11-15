@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { parseAccessPolicy } from "./access.js";
 import { netbirdModuleFromEnv } from "./modules/netbird/index.js";
+import { pocketIdModuleFromEnv } from "./modules/pocketid/index.js";
 import type { HubModule } from "./modules/types.js";
 import { TokenVerifier } from "./oauth.js";
 import { createHttpServer } from "./server.js";
@@ -26,8 +27,13 @@ function parseUrl(name: string, value: string): URL {
 }
 
 // Every module is enabled by its own environment variables; add new ones here.
-const modules = [netbirdModuleFromEnv(process.env)].filter((m): m is HubModule => m !== undefined);
-if (modules.length === 0) fail("No modules are configured (set NETBIRD_API_TOKEN for the netbird module)");
+let modules: HubModule[];
+try {
+  modules = [netbirdModuleFromEnv(process.env), pocketIdModuleFromEnv(process.env)].filter((m): m is HubModule => m !== undefined);
+} catch (error) {
+  fail(error instanceof Error ? error.message : String(error));
+}
+if (modules.length === 0) fail("No modules are configured (set NETBIRD_API_TOKEN for netbird or POCKETID_API_KEY for pocketid)");
 
 const policyFile = requireEnv("ACCESS_POLICY_FILE");
 let policy;

@@ -1,39 +1,12 @@
-import type { McpServer, ToolCallback } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { NetBirdApiError, type NetBirdClient, type Query } from "./client.js";
-
-const READ_ONLY = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true };
-
-export const id = (what: string) => z.string().min(1).describe(`ID of the ${what}`);
-export const seg = encodeURIComponent;
-
-/** Runs a NetBird call and turns API errors into tool errors instead of protocol errors. */
-export async function netbirdResult(call: () => Promise<unknown>): Promise<CallToolResult> {
-  try {
-    return json(await call());
-  } catch (error) {
-    if (error instanceof NetBirdApiError) return { isError: true, content: [{ type: "text", text: error.message }] };
-    throw error;
-  }
-}
+import { id, seg, ToolRegistrar } from "../tools.js";
+import type { NetBirdClient } from "./client.js";
 
 export function registerTools(server: McpServer, netbird: NetBirdClient): void {
   // Every read tool is a single GET against the Management API.
-  function get<Shape extends z.ZodRawShape>(
-    name: string,
-    description: string,
-    inputSchema: Shape,
-    request: (args: z.infer<z.ZodObject<Shape>>) => { path: string; query?: Query },
-  ): void {
-    const callback = (args: z.infer<z.ZodObject<Shape>>): Promise<CallToolResult> => {
-      const { path, query } = request(args);
-      return netbirdResult(() => netbird.get(path, query));
-    };
-    // ToolCallback<Shape> is a conditional type that TypeScript cannot resolve
-    // for a generic Shape, so the (already validated) argument type is asserted.
-    server.registerTool(name, { description, inputSchema, annotations: READ_ONLY }, callback as unknown as ToolCallback<Shape>);
-  }
+  const tools = new ToolRegistrar(server, netbird);
+  const get = tools.read.bind(tools);
 
   get(
     "netbird_list_peers",
@@ -108,8 +81,4 @@ export function registerTools(server: McpServer, netbird: NetBirdClient): void {
     { zone_id: id("DNS zone"), record_id: id("DNS record") },
     ({ zone_id, record_id }) => ({ path: `/api/dns/zones/${seg(zone_id)}/records/${seg(record_id)}` }),
   );
-}
-
-export function json(data: unknown): CallToolResult {
-  return { content: [{ type: "text", text: JSON.stringify(data) }] };
 }
