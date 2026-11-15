@@ -274,13 +274,17 @@ test("every JSON response hides credentials embedded in URLs, at any depth", asy
   assert.doesNotMatch(manifest, /db-secret/);
 });
 
-test("app-scoped tools pass app_namespace as appNamespace", async () => {
+test("app-scoped tools pass app_namespace, and ApplicationSet tools appset_namespace", async () => {
   await call("argocd_get_application", { name: "web", app_namespace: "team-a" });
   assert.equal(last().path, "/api/v1/applications/web?appNamespace=team-a");
   await call("argocd_get_logs", { name: "web", app_namespace: "team-a", pod_name: "p" });
   assert.equal(last().path, "/api/v1/applications/web/logs?podName=p&tailLines=100&follow=false&appNamespace=team-a");
   await call("argocd_list_applications", { app_namespace: "team-a" });
   assert.equal(last().path, "/api/v1/applications?appNamespace=team-a");
+  await call("argocd_get_applicationset", { name: "set", appset_namespace: "team-a" });
+  assert.equal(last().path, "/api/v1/applicationsets/set?appsetNamespace=team-a");
+  await call("argocd_list_applicationsets", { appset_namespace: "team-a" });
+  assert.equal(last().path, "/api/v1/applicationsets?appsetNamespace=team-a");
 });
 
 test("argocd_get_application drops managedFields", async () => {

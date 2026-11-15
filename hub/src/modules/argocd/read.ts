@@ -407,15 +407,30 @@ export function registerReadTools(server: McpServer, argocd: ArgoCdClient): void
   );
 
   // ApplicationSets
-  get("argocd_list_applicationsets", "List ApplicationSets with their generators, template, and status.", { project: z.string().optional().describe("Only this project") }, ({ project }) => ({
-    path: "/api/v1/applicationsets",
-    query: { projects: project },
-    transform: trimList,
-  }));
-  get("argocd_get_applicationset", "Retrieve one ApplicationSet with its generators, template, conditions, and generated applications.", { name: z.string().min(1).describe("ApplicationSet name") }, ({ name }) => ({
-    path: `/api/v1/applicationsets/${seg(name)}`,
-    transform: trimObject,
-  }));
+  const appsetNamespace = z
+    .string()
+    .optional()
+    .describe("Namespace of the ApplicationSet object, when it is not Argo CD's own namespace (applicationsets-in-any-namespace)");
+  get(
+    "argocd_list_applicationsets",
+    "List ApplicationSets with their generators, template, and status.",
+    { project: z.string().optional().describe("Only this project"), appset_namespace: appsetNamespace },
+    ({ project, appset_namespace }) => ({
+      path: "/api/v1/applicationsets",
+      query: { projects: project, appsetNamespace: appset_namespace },
+      transform: trimList,
+    }),
+  );
+  get(
+    "argocd_get_applicationset",
+    "Retrieve one ApplicationSet with its generators, template, conditions, and generated applications.",
+    { name: z.string().min(1).describe("ApplicationSet name"), appset_namespace: appsetNamespace },
+    ({ name, appset_namespace }) => ({
+      path: `/api/v1/applicationsets/${seg(name)}`,
+      query: { appsetNamespace: appset_namespace },
+      transform: trimObject,
+    }),
+  );
 
   // Projects
   get("argocd_list_projects", "List Argo CD projects: allowed source repositories, destinations, resource allow and deny lists, roles, and sync windows.", {}, () => ({

@@ -254,7 +254,8 @@ server's `/swagger.json`.
 | `argocd_list_repositories` | `/api/v1/repositories` | Allowlisted fields; passwords, keys, and tokens are never returned. |
 
 Every application-scoped tool takes an optional `app_namespace` (sent as
-`appNamespace`) for Argo CD's applications-in-any-namespace feature; the
+`appNamespace`) for Argo CD's applications-in-any-namespace feature, and the
+ApplicationSet tools an optional `appset_namespace` (sent as `appsetNamespace`); the
 application list shows each app's namespace. No tool passes `refresh`, so
 reading never triggers a reconciliation. Argo CD
 masks Secret values in managed-resource states; the hub also replaces every
